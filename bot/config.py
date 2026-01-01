@@ -1,0 +1,9 @@
+
+import os
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+RD_ACCESS_TOKEN = os.getenv("RD_ACCESS_TOKEN")
+RD_CLIENT_ID = os.getenv("RD_CLIENT_ID")
+RD_CLIENT_SECRET = os.getenv("RD_CLIENT_SECRET")
+RUTORRENT_URL = os.getenv("RUTORRENT_URL")
+RUTORRENT_USER = os.getenv("RUTORRENT_USER")
+RUTORRENT_PASS = os.getenv("RUTORRENT_PASS")
