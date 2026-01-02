@@ -27,6 +27,12 @@ except Exception:
     SeedboxClient = None
     SeedboxNotConfigured = Exception
 
+try:
+    from bot.rss import FeedManager, Router
+except Exception:
+    FeedManager = None
+    Router = None
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -108,8 +114,114 @@ def ytdl(update: Update, context: CallbackContext):
         update.message.reply_text("Usage: /ytdl <url>")
         return
     url = context.args[0]
-    # Explicit user request: we acknowledge and (for now) stub the background task.
-    update.message.reply_text(f"Queued yt-dlp job for: {url} (stubbed)")
+    # If real RD is available and supports the link, the user probably should use RD
+    try:
+        if RDClient:
+            rd = RDClient()
+            if rd.is_cached(url):
+                update.message.reply_text("Note: Real-Debrid reports this link is available; if you prefer RD, use appropriate RD commands.")
+    except RealDebridNotConfigured:
+        # RD not configured — proceed
+        pass
+
+    # Enqueue yt-dlp job
+    try:
+        from bot.jobs import enqueue_ytdl
+    except Exception:
+        update.message.reply_text("yt-dlp job runner not available")
+        return
+    jid = enqueue_ytdl(url)
+    update.message.reply_text(f"yt-dlp job queued (id={jid}). Warning: running yt-dlp on Heroku may be unstable.")
+
+
+# Initialize feed manager if rss module is present
+_feed_manager = None
+try:
+    if FeedManager and Router:
+        router = Router(rd_client=RDClient() if RDClient else None, sb_client=SeedboxClient() if SeedboxClient else None)
+        _feed_manager = FeedManager(router)
+except Exception:
+    _feed_manager = None
+
+
+def add_feed_cmd(update: Update, context: CallbackContext):
+    if _feed_manager is None:
+        update.message.reply_text("RSS support not available (missing dependencies)")
+        return
+    if len(context.args) < 1:
+        update.message.reply_text("Usage: /add_feed <url> [forced_backend: rd|sb] [private]")
+        return
+    url = context.args[0]
+    forced = None
+    private = False
+    if len(context.args) >= 2:
+        forced = context.args[1]
+        if forced not in ("rd", "sb"):
+            forced = None
+    if len(context.args) >= 3 and context.args[2].lower() in ("1", "true", "private"):
+        private = True
+    _feed_manager.add_feed(url, forced_backend=forced, private_torrents=private)
+    update.message.reply_text(f"Added feed: {url} (forced={forced}, private={private})")
+
+
+def list_feeds_cmd(update: Update, context: CallbackContext):
+    if _feed_manager is None:
+        update.message.reply_text("RSS support not available")
+        return
+    feeds = _feed_manager.list_feeds()
+    if not feeds:
+        update.message.reply_text("No feeds configured")
+        return
+    text = "\n".join([f"{f.url} (forced={f.forced_backend}, private={f.private_torrents})" for f in feeds])
+    update.message.reply_text(text)
+
+
+def remove_feed_cmd(update: Update, context: CallbackContext):
+    if _feed_manager is None:
+        update.message.reply_text("RSS support not available")
+        return
+    if len(context.args) < 1:
+        update.message.reply_text("Usage: /remove_feed <url>")
+        return
+    url = context.args[0]
+    _feed_manager.remove_feed(url)
+    update.message.reply_text(f"Removed feed: {url}")
+
+
+def poll_feeds_cmd(update: Update, context: CallbackContext):
+    if _feed_manager is None:
+        update.message.reply_text("RSS support not available")
+        return
+    # Run one poll and apply decisions (minimal: add torrents to backend stubs)
+    decisions = []
+
+    def on_decision(backend, entry):
+        decisions.append((backend, entry))
+        # perform minimal action: call add_magnet/add_torrent where applicable
+        link = entry.get('link') or entry.get('guid') or ''
+        if backend == 'rd' and RDClient:
+            try:
+                rd = RDClient()
+                rd.add_magnet(link)
+            except Exception as e:
+                decisions.append(("error", str(e)))
+        elif backend == 'sb' and SeedboxClient:
+            try:
+                sb = SeedboxClient()
+                sb.add_torrent(link)
+            except Exception as e:
+                decisions.append(("error", str(e)))
+
+    try:
+        _feed_manager.poll_once(on_decision=on_decision)
+    except Exception as exc:
+        update.message.reply_text(f"Polling failed: {exc}")
+        return
+    if not decisions:
+        update.message.reply_text("No new items")
+        return
+    text = "\n".join([f"{b}: { (e.get('title') or e.get('link') or '') }" for b, e in decisions if b in ('rd','sb')])
+    update.message.reply_text(f"Decisions:\n{text}")
 
 
 def create_app(token: str) -> Updater:
@@ -121,6 +233,10 @@ def create_app(token: str) -> Updater:
     dp.add_handler(CommandHandler("rd_delete", rd_delete))
     dp.add_handler(CommandHandler("sb_torrent", sb_torrent))
     dp.add_handler(CommandHandler("ytdl", ytdl))
+    dp.add_handler(CommandHandler("add_feed", add_feed_cmd))
+    dp.add_handler(CommandHandler("list_feeds", list_feeds_cmd))
+    dp.add_handler(CommandHandler("remove_feed", remove_feed_cmd))
+    dp.add_handler(CommandHandler("poll_feeds", poll_feeds_cmd))
 
     return updater
 
