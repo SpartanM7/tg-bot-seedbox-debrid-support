@@ -14,6 +14,13 @@ class TestPackager(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
+        # Ensure any global locks are released for tests that may have left them
+        try:
+            from bot.queue import Lock
+            l = Lock('packager:lock')
+            l.release()
+        except Exception:
+            pass
 
     def _make_folder_with_files(self, name, file_count=3, file_size=1024):
         path = os.path.join(self.tmpdir, name)

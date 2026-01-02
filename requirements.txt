@@ -3,3 +3,4 @@ feedparser
 yt-dlp
 python-telegram-bot>=13.0
 requests
+redis>=4.0

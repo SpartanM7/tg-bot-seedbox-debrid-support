@@ -56,8 +56,14 @@ def prepare(base: str, dest: str = "telegram") -> List[Dict[str, Any]]:
     - skipped: bool
     - reason: reason for skip if any
     """
+    from bot.queue import Lock
+
     results: List[Dict[str, Any]] = []
-    with _lock:
+    # Use cross-process lock if REDIS_URL provided, otherwise fall back to process lock
+    l = Lock("packager:lock")
+    if not l.acquire():
+        raise RuntimeError("Could not acquire global packager lock")
+    try:
         for n in os.listdir(base):
             p = os.path.join(base, n)
             record = {"name": n, "path": p, "zipped": False, "zip_path": None, "skipped": False, "reason": None}
@@ -72,4 +78,6 @@ def prepare(base: str, dest: str = "telegram") -> List[Dict[str, Any]]:
                     record["zipped"] = True
                     record["zip_path"] = zip_path
             results.append(record)
+    finally:
+        l.release()
     return results

@@ -1,5 +1,34 @@
 
 import os
+from pathlib import Path
+from typing import Optional
+
+
+def load_dotenv(dotenv_path: Optional[str] = None) -> None:
+    """Load a `.env` file into environment variables (does not overwrite existing vars).
+
+    - dotenv_path: path to .env file. Defaults to the repository root `.env`.
+    """
+    p = Path(dotenv_path) if dotenv_path else Path(__file__).resolve().parents[1] / ".env"
+    if not p.exists():
+        return
+    for raw in p.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = val
+
+
+# Auto-load .env if present (useful for local dev; CI / Heroku use real env vars)
+load_dotenv()
+
+# Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RD_ACCESS_TOKEN = os.getenv("RD_ACCESS_TOKEN")
 RD_CLIENT_ID = os.getenv("RD_CLIENT_ID")
