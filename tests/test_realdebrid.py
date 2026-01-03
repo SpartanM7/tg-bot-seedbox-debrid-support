@@ -22,7 +22,7 @@ class TestRDClient(unittest.TestCase):
         mock_resp = Mock()
         mock_resp.status_code = 200
         mock_resp.ok = True
-        mock_resp.json.return_value = {"abcdef123": {"instant": True}}
+        mock_resp.json.return_value = {"abcdef123": {"rd": [{"id": "1"}]}}
         mock_resp.text = 'x'
         mock_request.return_value = mock_resp
         c = RDClient(access_token='x')

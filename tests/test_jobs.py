@@ -1,15 +1,22 @@
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from bot.jobs import enqueue_ytdl, job_status
 
 
 class TestJobs(unittest.TestCase):
+    @patch('bot.jobs._executor')
     @patch('bot.jobs.subprocess.run')
-    def test_enqueue_ytdl_runs_and_records(self, mock_run):
+    def test_enqueue_ytdl_runs_and_records(self, mock_run, mock_executor):
+        # Setup synchronous execution for the test
+        def side_effect(fn, *args, **kwargs):
+            fn(*args, **kwargs)
+            return Mock()
+        mock_executor.submit.side_effect = side_effect
+
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = 'ok'
         mock_run.return_value.stderr = ''

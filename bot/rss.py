@@ -9,8 +9,7 @@ Features:
   3. If public & cached on Real-Debrid → Real-Debrid
   4. Else → seedbox
 
-This module uses RDClient and SeedboxClient to make routing decisions but
-keeps external actions (adding torrents) minimal/stubbed so tests can run.
+Uses `bot.state` for persistent 'seen' item tracking to survive restarts.
 """
 
 import time
@@ -24,10 +23,12 @@ except Exception:
 
 from bot.clients.realdebrid import RDClient, RealDebridNotConfigured
 from bot.clients.seedbox import SeedboxClient, SeedboxNotConfigured
+from bot.state import get_state
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
+# Polling interval defaults
+DEFAULT_POLL_INTERVAL = 600  # 10 mins
 
 class FeedConfig:
     def __init__(self, url: str, forced_backend: Optional[str] = None, private_torrents: bool = False):
@@ -66,9 +67,12 @@ class Router:
                 except RealDebridNotConfigured:
                     # If RD not configured, fall back to seedbox
                     return 'sb'
+                except Exception as e:
+                    logger.warning(f"RD cache check failed: {e}. Falling back to Seedbox.")
+                    return 'sb'
             return 'sb'
 
-        # For non-torrent entries default to seedbox (downloads often require seedbox)
+        # For non-torrent entries default to seedbox (some feeds are generic)
         return 'sb'
 
 
@@ -76,15 +80,13 @@ class FeedManager:
     def __init__(self, router: Router):
         self.router = router
         self.feeds: Dict[str, FeedConfig] = {}
-        self.seen: Dict[str, Set[str]] = {}
+        self.state_manager = get_state()
 
     def add_feed(self, url: str, forced_backend: Optional[str] = None, private_torrents: bool = False):
         self.feeds[url] = FeedConfig(url, forced_backend, private_torrents)
-        self.seen[url] = set()
 
     def remove_feed(self, url: str):
         self.feeds.pop(url, None)
-        self.seen.pop(url, None)
 
     def list_feeds(self):
         return list(self.feeds.values())
@@ -93,23 +95,40 @@ class FeedManager:
         """Poll all feeds once and call `on_decision(backend, entry)` for new items."""
         if feedparser is None:
             raise RuntimeError("feedparser is not installed")
+        
         for url, cfg in self.feeds.items():
             logger.info(f"Polling feed: {url}")
-            d = feedparser.parse(url)
-            for e in d.entries:
-                uid = e.get('id') or e.get('link') or e.get('guid') or e.get('title')
-                if not uid or uid in self.seen[url]:
-                    continue
-                self.seen[url].add(uid)
-                backend = self.router.decide(cfg, e)
-                logger.info(f"Feed {url}: route {uid} -> {backend}")
-                if on_decision:
-                    on_decision(backend, e)
+            try:
+                d = feedparser.parse(url)
+            except Exception as e:
+                logger.error(f"Failed to parse feed {url}: {e}")
+                continue
 
-    def run_polling(self, interval_sec: int = 300, on_decision: Optional[Callable[[str, Dict], None]] = None):
+            for e in d.entries:
+                # Unique ID: GUID > link > title
+                uid = e.get('id') or e.get('link') or e.get('guid') or e.get('title')
+                if not uid:
+                    continue
+                
+                if self.state_manager.is_seen(url, uid):
+                    continue
+
+                # Mark as seen immediately to avoid processing loop if decision fails
+                self.state_manager.add_seen(url, uid)
+                
+                try:
+                    backend = self.router.decide(cfg, e)
+                    logger.info(f"Feed {url}: route {uid} -> {backend}")
+                    if on_decision:
+                        on_decision(backend, e)
+                except Exception as exc:
+                    logger.error(f"Error routing item {uid} from {url}: {exc}")
+
+    def run_polling(self, interval_sec: int = DEFAULT_POLL_INTERVAL, on_decision: Optional[Callable[[str, Dict], None]] = None):
+        logger.info(f"Starting RSS poll loop (interval={interval_sec}s)")
         while True:
             try:
                 self.poll_once(on_decision=on_decision)
             except Exception as exc:
-                logger.exception('error while polling feeds: %s', exc)
+                logger.exception('Uncaught error during RSS polling: %s', exc)
             time.sleep(interval_sec)

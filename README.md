@@ -4,11 +4,12 @@
 Explicit control-plane Telegram bot.
 
 ## Features
-- Real-Debrid support (client stubs implemented; full API integration pending)
-- Feral Hosting rTorrent control (client stubs implemented; full RPC pending)
-- Explicit yt-dlp commands (handler scaffolded; execution currently stubbed)
-- Explicit upload destination (command philosophy enforced in handlers)
-- Serialized image folder compression (implemented in `bot/utils/packager.py`)
+- **Real-Debrid**: Full API integration (Add magnet, List, Delete, Unrestrict Link).
+- **Seedbox (rTorrent)**: Full XML-RPC control (Add, Stop, Start, Delete, List).
+- **yt-dlp**: Explicit command support with persistent background job tracking.
+- **RSS Automation**: Persistent feed tracking and auto-routing (Private->Seedbox, Cached->RD).
+- **Explicit Control**: No auto-downloading loop; currently acts as a control-plane.
+- **Persistence**: Redis-backed state (with local JSON fallback) for robust restarts.
 
 ## Configuration
 

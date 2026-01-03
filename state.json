@@ -1,0 +1,96 @@
+{
+  "seen": {},
+  "jobs": {
+    "696208f7-995f-4daa-ad8d-4fd558f46267": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767389590.862586
+    },
+    "4d2ad159-cec0-46c2-9c0b-02b2b74f3d7d": {
+      "url": "http://example.com/video",
+      "out_dir": "downloads",
+      "status": "error",
+      "stderr": "[WinError 2] The system cannot find the file specified",
+      "end_time": 1767389591.047631
+    },
+    "c8e4385a-11c0-494e-821d-63065d439441": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767389632.0069277
+    },
+    "2d12377f-07ac-4308-9b22-6a73ccb78ab6": {
+      "url": "http://example.com/video",
+      "out_dir": "downloads",
+      "status": "error",
+      "stderr": "[WinError 2] The system cannot find the file specified",
+      "end_time": 1767389632.1720457
+    },
+    "9bb3ed5b-4fd0-45da-a4b0-b27f984f388c": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767389655.182065
+    },
+    "1e81f9c0-8c02-4d03-a617-823cdf23be19": {
+      "url": "http://example.com/video",
+      "out_dir": "downloads",
+      "status": "error",
+      "stderr": "[WinError 2] The system cannot find the file specified",
+      "end_time": 1767389655.260604
+    },
+    "c62fefb2-027b-47ad-a1ae-e7eacbe43a87": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767389754.0760264
+    },
+    "c8e17b00-6831-4b98-b205-5ab22e8b2d77": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767389779.382591
+    },
+    "0a313aec-8bde-461c-ae04-68858235e401": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767389795.02597
+    },
+    "a4cd5a40-5ebf-442a-a05a-fa5e79ed3546": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767389819.3933384
+    },
+    "abaaf76d-4d4e-4ae6-a4ef-c41a1c950180": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767394361.2170212
+    },
+    "fcd899fe-e3cd-4177-96c0-d61ab311779b": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767394423.6463861
+    },
+    "b5a7a640-52bd-4c70-83a6-b93c0e4af145": {
+      "url": "http://example.com/video",
+      "out_dir": null,
+      "status": "done",
+      "returncode": 0,
+      "end_time": 1767394461.0051408
+    }
+  }
+}
