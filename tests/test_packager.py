@@ -16,7 +16,7 @@ class TestPackager(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
         # Ensure any global locks are released for tests that may have left them
         try:
-            from bot.queue import Lock
+            from bot.storage_queue import Lock
             l = Lock('packager:lock')
             l.release()
         except Exception:

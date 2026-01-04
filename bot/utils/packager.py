@@ -56,7 +56,7 @@ def prepare(base: str, dest: str = "telegram") -> List[Dict[str, Any]]:
     - skipped: bool
     - reason: reason for skip if any
     """
-    from bot.queue import Lock
+    from bot.storage_queue import Lock
 
     results: List[Dict[str, Any]] = []
     # Use cross-process lock if REDIS_URL provided, otherwise fall back to process lock

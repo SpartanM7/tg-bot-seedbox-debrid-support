@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from bot.queue import JobQueue, Lock
+from bot.storage_queue import JobQueue, Lock
 
 
 class TestQueueLocal(unittest.TestCase):

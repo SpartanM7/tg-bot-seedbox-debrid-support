@@ -148,4 +148,3 @@ class StorageAwareQueue:
         """Get copy of queue."""
         with self._lock:
             return self._queue.copy()
-

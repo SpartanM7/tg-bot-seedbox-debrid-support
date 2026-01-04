@@ -24,7 +24,7 @@ except ImportError:
 
 from bot.utils import packager
 from bot.state import get_state
-from bot.queue import get_storage_queue
+from bot.storage_queue import get_storage_queue
 from bot.config import SEEDBOX_HOST, SEEDBOX_SFTP_PORT, RUTORRENT_USER, RUTORRENT_PASS, DRIVE_DEST, SFTP_USER, SFTP_PASS
 
 logger = logging.getLogger(__name__)

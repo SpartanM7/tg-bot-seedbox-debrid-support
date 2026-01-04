@@ -43,7 +43,7 @@ def _run_ytdl(job_id: str, url: str, out_dir: str = None, dest: str = "telegram"
     cmd = [YTDL_CMD, url]
     
     # Check for disk space before starting
-    from bot.queue import get_storage_queue
+    from bot.storage_queue import get_storage_queue
     storage_queue = get_storage_queue()
     if not storage_queue.has_space():
         logger.warning(f"Job {job_id} paused: low disk space")
