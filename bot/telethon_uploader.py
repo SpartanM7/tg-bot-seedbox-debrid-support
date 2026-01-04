@@ -6,6 +6,7 @@ the 50MB bot API limit. Requires API_ID and API_HASH from my.telegram.org.
 
 import os
 import logging
+import threading
 from typing import Optional
 
 try:
