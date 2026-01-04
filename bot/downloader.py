@@ -182,20 +182,17 @@ class Downloader:
         if not paramiko:
             raise RuntimeError("paramiko not installed")
         
-        # Parse sftp://path (host/user from config)
-        # We expect url to be just "sftp:///full/remote/path" or similar
-        # Since we have global config for seedbox auth, we use that.
-        
         remote_path = url[7:] # strip sftp://
-        
         logger.info(f"Starting SFTP download from {SEEDBOX_HOST}:{SEEDBOX_SFTP_PORT} {remote_path}")
         
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         
         try:
-            logger.info(f"DEBUG: Attempting SFTP login with user: {SFTP_USER} on {SEEDBOX_HOST}:{SEEDBOX_SFTP_PORT}")
-            # Use high-level connect which is more robust
+            logger.info(f"DEBUG: Attempting SFTP login with user: '{SFTP_USER}' on {SEEDBOX_HOST}:{SEEDBOX_SFTP_PORT}")
+            if not SFTP_USER or not SFTP_PASS:
+                 raise RuntimeError("SFTP credentials (SFTP_USER/SFTP_PASS) not set in config")
+
             ssh.connect(
                 hostname=SEEDBOX_HOST, 
                 port=SEEDBOX_SFTP_PORT, 
@@ -203,11 +200,12 @@ class Downloader:
                 password=SFTP_PASS,
                 allow_agent=False,
                 look_for_keys=False,
-                timeout=20
+                timeout=30,
+                auth_timeout=30,
+                banner_timeout=30
             )
             sftp = ssh.open_sftp()
             
-            # recursive download if directory?
             try:
                 attr = sftp.stat(remote_path)
                 if str(attr).startswith('d'):
@@ -225,7 +223,7 @@ class Downloader:
             ssh.close()
             
         return dest_path
-
+走
     def _download_sftp_dir(self, sftp, remote_dir, local_dir):
         os.makedirs(local_dir, exist_ok=True)
         for entry in sftp.listdir_attr(remote_dir):

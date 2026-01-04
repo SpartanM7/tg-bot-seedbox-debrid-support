@@ -284,22 +284,42 @@ def _check_sb(update: Update) -> bool:
     return True
 
 def rd_download(update: Update, context: CallbackContext):
-    """Manually trigger download for an existing RD torrent ID."""
+    """Manually trigger download for an existing RD torrent or download ID."""
     if not _check_rd(update): return
     tid = _get_arg(context)
     if not tid:
-        update.message.reply_text("Usage: /rd_download <torrent_id>")
+        update.message.reply_text("Usage: /rd_download <id> [dest]")
         return
     
     try:
-        update.message.reply_text(f"Fetching info for RD torrent `{tid}`...", parse_mode="Markdown")
-        info = rd_client.get_torrent_info(tid)
-        links = info.get('links', [])
+        update.message.reply_text(f"Fetching info for RD resource `{tid}`...", parse_mode="Markdown")
+        
+        info = None
+        links = []
+        filename = 'Unknown'
+        
+        try:
+            info = rd_client.get_torrent_info(tid)
+            links = info.get('links', [])
+            filename = info.get('filename', 'Unknown')
+        except RDAPIError as e:
+            if "404" in str(e):
+                logger.info(f"RD resource {tid} not found in torrents, checking downloads...")
+                dls = rd_client.get_downloads(limit=50)
+                match = next((d for d in dls if d.get('id') == tid), None)
+                if match:
+                    # 'download' is the unrestricted link, 'link' is the original
+                    links = [match.get('download') or match.get('link')]
+                    filename = match.get('filename', 'Unknown')
+                else:
+                    return update.message.reply_text(f"Resource `{tid}` not found in RD history.")
+            else:
+                raise
+
         if not links:
-            return update.message.reply_text("No links found in this torrent.")
+            return update.message.reply_text("No links found for this resource.")
         
         chat_id = update.effective_chat.id
-        filename = info.get('filename', 'Unknown')
         
         # Determine intent (default to telegram)
         dest = context.args[1] if len(context.args) > 1 else "telegram"
@@ -310,10 +330,17 @@ def rd_download(update: Update, context: CallbackContext):
         
         for link in links:
             try:
-                unrestricted = rd_client.unrestrict_link(link)
-                dl_url = unrestricted['download']
-                name = unrestricted['filename']
-                file_size = unrestricted.get('filesize', 0)
+                # If it's already an unrestricted link (from downloads), this might re-unrestrict it which is fine
+                # but let's try to be smart.
+                if "/d/" in link or "real-debrid.com/d/" in link:
+                     dl_url = link
+                     name = filename # use the one we found
+                     file_size = 0
+                else:
+                    unrestricted = rd_client.unrestrict_link(link)
+                    dl_url = unrestricted['download']
+                    name = unrestricted['filename']
+                    file_size = unrestricted.get('filesize', 0)
                 
                 downloader.process_item(dl_url, name, dest=dest, chat_id=chat_id, size=file_size)
             except Exception as e:
@@ -322,7 +349,7 @@ def rd_download(update: Update, context: CallbackContext):
                 
     except Exception as e:
         update.message.reply_text(f"Error: {e}")
-
+走
 def sb_download(update: Update, context: CallbackContext):
     """Manually trigger download for an existing Seedbox torrent hash."""
     if not _check_sb(update): return
