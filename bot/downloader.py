@@ -49,16 +49,39 @@ class Downloader:
         self.updater = telegram_updater
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
         self.storage_queue = get_storage_queue(DOWNLOAD_DIR, min_free_gb=20.0)
+
+        # Task tracking (USED BY /status)
         self._active_tasks = {}
         self._tasks_lock = threading.Lock()
 
     # ─────────────────────────────────────────────
-    # MAIN ENTRY
+    # STATUS SUPPORT (FIXED)
     # ─────────────────────────────────────────────
 
-    def process_item(self, download_url: str, name: str, dest: str = "telegram",
-                     chat_id: Optional[int] = None, size: int = 0):
+    def get_active_tasks(self) -> dict:
+        """
+        Return a snapshot of currently active tasks.
+        Used by /status command.
+        """
+        with self._tasks_lock:
+            return self._active_tasks.copy()
+
+    def _update_task_status(self, task_id: str, status: str):
+        with self._tasks_lock:
+            if task_id in self._active_tasks:
+                self._active_tasks[task_id]["status"] = status
+
+    # ─────────────────────────────────────────────
+    # ENTRY POINT
+    # ─────────────────────────────────────────────
+
+    def process_item(self, download_url: str, name: str,
+                     dest: str = "telegram",
+                     chat_id: Optional[int] = None,
+                     size: int = 0):
+
         task_id = f"{name}_{int(time.time())}"
+
         with self._tasks_lock:
             self._active_tasks[task_id] = {
                 "name": name,
@@ -68,16 +91,27 @@ class Downloader:
                 "start_time": time.time(),
             }
 
-        if self.storage_queue.enqueue({
+        item = {
             "url": download_url,
             "name": name,
             "dest": dest,
             "chat_id": chat_id,
             "size": size,
-        }):
+        }
+
+        if self.storage_queue.enqueue(item):
+            self._update_task_status(task_id, "waiting (low disk)")
             self._notify(chat_id, f"⏸️ Queued: {name} (low disk space)")
         else:
-            _executor.submit(self._run_task, download_url, name, dest, chat_id, size, task_id)
+            _executor.submit(
+                self._run_task,
+                download_url,
+                name,
+                dest,
+                chat_id,
+                size,
+                task_id,
+            )
 
     # ─────────────────────────────────────────────
     # CORE WORKER
@@ -85,9 +119,14 @@ class Downloader:
 
     def _run_task(self, url, name, dest, chat_id, size, task_id):
         local_path = os.path.join(DOWNLOAD_DIR, name)
+
         try:
+            self._update_task_status(task_id, "downloading")
             self._notify(chat_id, f"⬇️ Downloading: {name}")
+
             local_path = self._download_file(url, local_path)
+
+            self._update_task_status(task_id, "packaging")
 
             if os.path.isdir(local_path):
                 items = packager.prepare(local_path, dest=dest)
@@ -97,23 +136,27 @@ class Downloader:
             for item in items:
                 if item.get("skipped"):
                     continue
-                path = item.get("zip_path") or item["path"]
+
+                upload_path = item.get("zip_path") or item["path"]
+                self._update_task_status(task_id, f"uploading {item['name']}")
+
                 if dest == "telegram":
-                    self._upload_telegram(path, chat_id, task_id)
+                    self._upload_telegram(upload_path, chat_id, task_id)
                 else:
-                    self._upload_gdrive(path, chat_id)
+                    self._upload_gdrive(upload_path, chat_id)
 
             self._notify(chat_id, f"✅ **Completed Transfer**\n\n📁 `{name}`")
 
         except Exception as e:
-            logger.exception("Task failed")
-            self._notify(chat_id, f"❌ Error: {e}")
+            logger.exception("Failed to process task")
+            self._notify(chat_id, f"❌ Error processing {name}: {e}")
+
         finally:
             with self._tasks_lock:
                 self._active_tasks.pop(task_id, None)
 
     # ─────────────────────────────────────────────
-    # TELEGRAM UPLOAD (FIXED)
+    # TELEGRAM UPLOAD (SAFE)
     # ─────────────────────────────────────────────
 
     def _upload_telegram(self, path, chat_id, task_id=None):
@@ -122,16 +165,19 @@ class Downloader:
         if size > MAX_TG_SIZE:
             from bot.utils.splitter import split_file
             parts = split_file(path)
+
             for i, part in enumerate(parts):
                 self._notify(chat_id, f"⬆️ Uploading part {i+1}/{len(parts)}")
                 self._upload_telegram_real(part, chat_id, task_id)
-                os.remove(part)
+                if part != path and os.path.exists(part):
+                    os.remove(part)
         else:
             self._upload_telegram_real(path, chat_id, task_id)
 
     def _upload_telegram_real(self, path, chat_id, task_id=None):
         size = os.path.getsize(path)
         thumb = None
+
         if os.path.splitext(path)[1].lower() in (".mp4", ".mkv", ".avi"):
             thumb = generate_thumbnail(path)
 
@@ -158,15 +204,11 @@ class Downloader:
         loop = get_telegram_loop()
 
         future = asyncio.run_coroutine_threadsafe(
-            uploader.upload_file(
-                path,
-                chat_id,
-                thumb_path=thumb_path,
-            ),
+            uploader.upload_file(path, chat_id, thumb_path=thumb_path),
             loop,
         )
 
-        future.result()  # wait synchronously (safe)
+        future.result()
 
     # ─────────────────────────────────────────────
     # DOWNLOAD HELPERS
@@ -198,4 +240,4 @@ class Downloader:
             try:
                 self.updater.bot.send_message(chat_id=chat_id, text=text)
             except Exception:
-                pass
+                logger.error("Failed to send notification")
