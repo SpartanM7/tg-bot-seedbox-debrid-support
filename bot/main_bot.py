@@ -279,6 +279,80 @@ def _check_sb(update: Update) -> bool:
         return False
     return True
 
+def rd_download(update: Update, context: CallbackContext):
+    """Manually trigger download for an existing RD torrent ID."""
+    if not _check_rd(update): return
+    tid = _get_arg(context)
+    if not tid:
+        update.message.reply_text("Usage: /rd_download <torrent_id>")
+        return
+    
+    try:
+        update.message.reply_text(f"Fetching info for RD torrent `{tid}`...", parse_mode="Markdown")
+        info = rd_client.get_torrent_info(tid)
+        links = info.get('links', [])
+        if not links:
+            return update.message.reply_text("No links found in this torrent.")
+        
+        chat_id = update.effective_chat.id
+        filename = info.get('filename', 'Unknown')
+        
+        # Determine intent (default to telegram)
+        dest = context.args[1] if len(context.args) > 1 else "telegram"
+        if dest not in ["telegram", "gdrive"]:
+             dest = "telegram"
+
+        update.message.reply_text(f"Enqueuing {len(links)} link(s) for `{filename}` to `{dest}`...")
+        
+        for link in links:
+            try:
+                unrestricted = rd_client.unrestrict_link(link)
+                dl_url = unrestricted['download']
+                name = unrestricted['filename']
+                file_size = unrestricted.get('filesize', 0)
+                
+                downloader.process_item(dl_url, name, dest=dest, chat_id=chat_id, size=file_size)
+            except Exception as e:
+                logger.error(f"Failed to unrestrict/process RD link {link}: {e}")
+                update.message.reply_text(f"Failed to process link: {e}")
+                
+    except Exception as e:
+        update.message.reply_text(f"Error: {e}")
+
+def sb_download(update: Update, context: CallbackContext):
+    """Manually trigger download for an existing Seedbox torrent hash."""
+    if not _check_sb(update): return
+    shash = _get_arg(context)
+    if not shash:
+        update.message.reply_text("Usage: /sb_download <hash>")
+        return
+    
+    try:
+        items = sb_client.list_torrents()
+        t = next((i for i in items if i['hash'] == shash), None)
+        if not t:
+            return update.message.reply_text(f"Torrent with hash `{shash}` not found on Seedbox.", parse_mode="Markdown")
+        
+        base_path = t.get('base_path')
+        if not base_path:
+            return update.message.reply_text("Could not find base_path for this torrent.")
+        
+        chat_id = update.effective_chat.id
+        name = t.get('name', 'Unknown')
+        file_size = t.get('size', 0)
+        
+        # Determine intent
+        dest = context.args[1] if len(context.args) > 1 else "telegram"
+        if dest not in ["telegram", "gdrive"]:
+             dest = "telegram"
+
+        dl_url = f"sftp://{base_path}"
+        update.message.reply_text(f"Enqueuing `{name}` to `{dest}` via SFTP...", parse_mode="Markdown")
+        downloader.process_item(dl_url, name, dest=dest, chat_id=chat_id, size=file_size)
+        
+    except Exception as e:
+        update.message.reply_text(f"Error: {e}")
+
 # yt-dlp Commands
 
 def ytdl(update: Update, context: CallbackContext):
@@ -408,6 +482,7 @@ def create_app(token: str) -> Updater:
     dp.add_handler(CommandHandler("rd_delete", rd_delete))
     dp.add_handler(CommandHandler("rd_downloads", rd_downloads))
     dp.add_handler(CommandHandler("rd_unrestrict", rd_unrestrict))
+    dp.add_handler(CommandHandler("rd_download", rd_download)) # New
 
     
     # Seedbox
@@ -416,6 +491,7 @@ def create_app(token: str) -> Updater:
     dp.add_handler(CommandHandler("sb_stop", sb_stop))
     dp.add_handler(CommandHandler("sb_start", sb_start))
     dp.add_handler(CommandHandler("sb_delete", sb_delete))
+    dp.add_handler(CommandHandler("sb_download", sb_download)) # New
     
     # yt-dlp
     dp.add_handler(CommandHandler("rd_torrent_gdrive", rd_torrent_gdrive))
