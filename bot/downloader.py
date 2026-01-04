@@ -223,8 +223,10 @@ class Downloader:
             try:
                 attr = sftp.stat(remote_path)
                 if str(attr).startswith('d'):
-                    # For directories, we'll just update per-file status
-                    self._download_sftp_dir(sftp, remote_path, dest_path, task_id)
+                    # Count total files first
+                    total_files = self._get_sftp_file_count(sftp, remote_path)
+                    logger.info(f"SFTP Directory contains {total_files} files.")
+                    self._download_sftp_dir(sftp, remote_path, dest_path, task_id, total_files=total_files)
                 else:
                     sftp.get(remote_path, dest_path, callback=sftp_cb)
             except IOError as e:
@@ -239,20 +241,38 @@ class Downloader:
             
         return dest_path
 
-    def _download_sftp_dir(self, sftp, remote_dir, local_dir, task_id: Optional[str] = None):
+    def _get_sftp_file_count(self, sftp, remote_dir) -> int:
+        count = 0
+        try:
+            for entry in sftp.listdir_attr(remote_dir):
+                if str(entry).startswith('d'):
+                    count += self._get_sftp_file_count(sftp, remote_dir + "/" + entry.filename)
+                else:
+                    count += 1
+        except Exception:
+            pass
+        return count
+
+    def _download_sftp_dir(self, sftp, remote_dir, local_dir, task_id: Optional[str] = None, total_files: int = 0, current_index: List[int] = None):
+        if current_index is None: current_index = [0]
         os.makedirs(local_dir, exist_ok=True)
         for entry in sftp.listdir_attr(remote_dir):
             remote_path = remote_dir + "/" + entry.filename
             local_path = os.path.join(local_dir, entry.filename)
             if str(entry).startswith('d'):
-                self._download_sftp_dir(sftp, remote_path, local_path, task_id)
+                self._download_sftp_dir(sftp, remote_path, local_path, task_id, total_files, current_index)
             else:
+                current_index[0] += 1
+                curr = current_index[0]
+                total_str = f" {curr}/{total_files}" if total_files > 0 else ""
+                
                 def cb(t, total):
                     if task_id and total > 0:
                         p = (t / total) * 100
                         if int(p) % 10 == 0:
-                             self._update_task_status(task_id, f"downloading {entry.filename} ({p:.1f}%)")
-                if task_id: self._update_task_status(task_id, f"downloading {entry.filename} (0.0%)")
+                             self._update_task_status(task_id, f"downloading{total_str} {entry.filename} ({p:.1f}%)")
+                
+                if task_id: self._update_task_status(task_id, f"downloading{total_str} {entry.filename} (0.0%)")
                 sftp.get(remote_path, local_path, callback=cb)
 
     def _upload_telegram(self, path: str, chat_id: int, task_id: Optional[str] = None):
