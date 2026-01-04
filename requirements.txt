@@ -1,9 +1,8 @@
 aiohttp
 feedparser
 yt-dlp
-python-telegram-bot>=13.0
+python-telegram-bot==13.15
 requests
 redis
 paramiko>=4.0
 telethon>=1.24.0
-
