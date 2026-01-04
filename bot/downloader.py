@@ -15,7 +15,7 @@ import requests
 import shutil
 import logging
 import subprocess
-from typing import List, Optional
+from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -39,7 +39,7 @@ from bot.config import (
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_DIR = "downloads"
-MAX_TG_SIZE = 2 * 1024 * 1024 * 1024 - 1024  # ~2GB
+MAX_TG_SIZE = 2 * 1024 * 1024 * 1024 - 1024
 _executor = ThreadPoolExecutor(max_workers=2)
 _state = get_state()
 
@@ -50,19 +50,14 @@ class Downloader:
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
         self.storage_queue = get_storage_queue(DOWNLOAD_DIR, min_free_gb=20.0)
 
-        # Task tracking (USED BY /status)
         self._active_tasks = {}
         self._tasks_lock = threading.Lock()
 
     # ─────────────────────────────────────────────
-    # STATUS SUPPORT (FIXED)
+    # STATUS SUPPORT
     # ─────────────────────────────────────────────
 
     def get_active_tasks(self) -> dict:
-        """
-        Return a snapshot of currently active tasks.
-        Used by /status command.
-        """
         with self._tasks_lock:
             return self._active_tasks.copy()
 
@@ -75,13 +70,10 @@ class Downloader:
     # ENTRY POINT
     # ─────────────────────────────────────────────
 
-    def process_item(self, download_url: str, name: str,
-                     dest: str = "telegram",
-                     chat_id: Optional[int] = None,
-                     size: int = 0):
+    def process_item(self, download_url, name, dest="telegram",
+                     chat_id=None, size=0):
 
         task_id = f"{name}_{int(time.time())}"
-
         with self._tasks_lock:
             self._active_tasks[task_id] = {
                 "name": name,
@@ -101,17 +93,9 @@ class Downloader:
 
         if self.storage_queue.enqueue(item):
             self._update_task_status(task_id, "waiting (low disk)")
-            self._notify(chat_id, f"⏸️ Queued: {name} (low disk space)")
+            self._notify(chat_id, f"⏸️ Queued: {name}")
         else:
-            _executor.submit(
-                self._run_task,
-                download_url,
-                name,
-                dest,
-                chat_id,
-                size,
-                task_id,
-            )
+            _executor.submit(self._run_task, download_url, name, dest, chat_id, size, task_id)
 
     # ─────────────────────────────────────────────
     # CORE WORKER
@@ -121,10 +105,10 @@ class Downloader:
         local_path = os.path.join(DOWNLOAD_DIR, name)
 
         try:
-            self._update_task_status(task_id, "downloading")
+            self._update_task_status(task_id, "downloading (0%)")
             self._notify(chat_id, f"⬇️ Downloading: {name}")
 
-            local_path = self._download_file(url, local_path)
+            local_path = self._download_file(url, local_path, task_id)
 
             self._update_task_status(task_id, "packaging")
 
@@ -138,53 +122,51 @@ class Downloader:
                     continue
 
                 upload_path = item.get("zip_path") or item["path"]
-                self._update_task_status(task_id, f"uploading {item['name']}")
+                self._update_task_status(task_id, f"uploading {item['name']} (0%)")
 
                 if dest == "telegram":
                     self._upload_telegram(upload_path, chat_id, task_id)
                 else:
                     self._upload_gdrive(upload_path, chat_id)
 
+            self._update_task_status(task_id, "completed")
             self._notify(chat_id, f"✅ **Completed Transfer**\n\n📁 `{name}`")
 
         except Exception as e:
-            logger.exception("Failed to process task")
-            self._notify(chat_id, f"❌ Error processing {name}: {e}")
+            logger.exception("Task failed")
+            self._update_task_status(task_id, "error")
+            self._notify(chat_id, f"❌ Error: {e}")
 
         finally:
             with self._tasks_lock:
                 self._active_tasks.pop(task_id, None)
 
     # ─────────────────────────────────────────────
-    # TELEGRAM UPLOAD (SAFE)
+    # TELEGRAM UPLOAD (WITH PROGRESS)
     # ─────────────────────────────────────────────
 
-    def _upload_telegram(self, path, chat_id, task_id=None):
+    def _upload_telegram(self, path, chat_id, task_id):
         size = os.path.getsize(path)
 
         if size > MAX_TG_SIZE:
             from bot.utils.splitter import split_file
             parts = split_file(path)
-
             for i, part in enumerate(parts):
-                self._notify(chat_id, f"⬆️ Uploading part {i+1}/{len(parts)}")
+                self._update_task_status(task_id, f"uploading part {i+1}/{len(parts)} (0%)")
                 self._upload_telegram_real(part, chat_id, task_id)
-                if part != path and os.path.exists(part):
-                    os.remove(part)
+                os.remove(part)
         else:
             self._upload_telegram_real(path, chat_id, task_id)
 
-    def _upload_telegram_real(self, path, chat_id, task_id=None):
+    def _upload_telegram_real(self, path, chat_id, task_id):
         size = os.path.getsize(path)
         thumb = None
 
         if os.path.splitext(path)[1].lower() in (".mp4", ".mkv", ".avi"):
             thumb = generate_thumbnail(path)
 
-        self._notify(chat_id, f"⬆️ Uploading to Telegram: {os.path.basename(path)}")
-
         if size > 50 * 1024 * 1024:
-            self._upload_telegram_large(path, chat_id, thumb)
+            self._upload_telegram_large(path, chat_id, task_id, thumb)
         else:
             self.updater.bot.send_document(
                 chat_id=TG_UPLOAD_TARGET or chat_id,
@@ -195,7 +177,7 @@ class Downloader:
         if thumb and os.path.exists(thumb):
             os.remove(thumb)
 
-    def _upload_telegram_large(self, path, chat_id, thumb_path=None):
+    def _upload_telegram_large(self, path, chat_id, task_id, thumb_path):
         from bot.telethon_uploader import get_telethon_uploader
         from bot.telegram_loop import get_telegram_loop
         import asyncio
@@ -203,24 +185,43 @@ class Downloader:
         uploader = get_telethon_uploader()
         loop = get_telegram_loop()
 
+        def progress(current, total):
+            if total > 0:
+                percent = (current / total) * 100
+                if int(percent) % 5 == 0:
+                    self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
+
         future = asyncio.run_coroutine_threadsafe(
-            uploader.upload_file(path, chat_id, thumb_path=thumb_path),
+            uploader.upload_file(
+                path,
+                chat_id,
+                thumb_path=thumb_path,
+                progress_callback=progress,
+            ),
             loop,
         )
 
         future.result()
 
     # ─────────────────────────────────────────────
-    # DOWNLOAD HELPERS
+    # DOWNLOAD WITH PROGRESS
     # ─────────────────────────────────────────────
 
-    def _download_file(self, url, dest):
+    def _download_file(self, url, dest, task_id):
         with requests.get(url, stream=True, timeout=30) as r:
             r.raise_for_status()
+            total = int(r.headers.get("content-length", 0))
+            downloaded = 0
+
             with open(dest, "wb") as f:
                 for chunk in r.iter_content(8192):
                     if chunk:
                         f.write(chunk)
+                        if total:
+                            downloaded += len(chunk)
+                            if downloaded % (5 * 1024 * 1024) < 8192:
+                                percent = (downloaded / total) * 100
+                                self._update_task_status(task_id, f"downloading ({percent:.1f}%)")
         return dest
 
     # ─────────────────────────────────────────────
@@ -228,8 +229,7 @@ class Downloader:
     # ─────────────────────────────────────────────
 
     def _upload_gdrive(self, path, chat_id=None):
-        cmd = ["rclone", "copy", path, DRIVE_DEST]
-        subprocess.run(cmd, check=False)
+        subprocess.run(["rclone", "copy", path, DRIVE_DEST], check=False)
 
     # ─────────────────────────────────────────────
     # NOTIFY
