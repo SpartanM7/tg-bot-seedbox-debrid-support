@@ -4,6 +4,7 @@ Connects to real Real-Debrid, rTorrent, and yt-dlp implementations.
 """
 
 import os
+import time
 import logging
 import threading
 from telegram import Update
@@ -355,8 +356,6 @@ def sb_download(update: Update, context: CallbackContext):
 
 def status(update: Update, context: CallbackContext):
     """Unified status of all active tasks."""
-    import time
-    from bot.jobs import job_status
     try:
         lines = ["📡 *System Status*"]
         
@@ -390,13 +389,13 @@ def status(update: Update, context: CallbackContext):
                     lines.append(f"• `{name[:25]}`\n  └ {t['status'].replace('_', ' ').title()} | {t['progress']}%")
         
         # 4. yt-dlp Queue
-        # Note: job_status is a dict of all jobs. We want active ones.
-        active_jobs = {jid: jinfo for jid, jinfo in job_status.items() if jinfo['status'] in ['queued', 'processing']}
+        state = get_state()
+        all_jobs = state.list_jobs()
+        active_jobs = {jid: jinfo for jid, jinfo in all_jobs.items() if jinfo['status'] in ['queued', 'processing', 'running']}
         if active_jobs:
             lines.append("\n🎬 *yt-dlp Jobs:*")
             for jid, jinfo in active_jobs.items():
-                 lines.append(f"• `{jid}`\n  └ {jinfo['status'].title()} | {jinfo['dest'].upper()}")
-
+                 lines.append(f"• `{jid[:8]}...`\n  └ {jinfo['status'].title()} | {jinfo.get('dest', 'telegram').upper()}")
         if len(lines) == 1:
             lines.append("\n✅ Everything is idle.")
             

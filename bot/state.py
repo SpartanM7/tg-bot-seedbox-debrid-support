@@ -31,6 +31,10 @@ class StateManager(ABC):
         pass
 
     @abstractmethod
+    def list_jobs(self) -> Dict[str, Dict[str, Any]]:
+        pass
+
+    @abstractmethod
     def add_processed(self, item_id: str):
         pass
 
@@ -70,6 +74,16 @@ class RedisState(StateManager):
         if data:
             return json.loads(data)
         return None
+
+    def list_jobs(self) -> Dict[str, Dict[str, Any]]:
+        keys = self.r.keys("job:*")
+        jobs = {}
+        for k in keys:
+            job_id = k.split(":", 1)[1]
+            data = self.r.get(k)
+            if data:
+                jobs[job_id] = json.loads(data)
+        return jobs
 
     def add_processed(self, item_id: str):
         self.r.sadd("processed_torrents", item_id)
@@ -130,6 +144,9 @@ class JsonFileState(StateManager):
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         return self.data["jobs"].get(job_id)
+
+    def list_jobs(self) -> Dict[str, Dict[str, Any]]:
+        return self.data.get("jobs", {})
 
     def add_processed(self, item_id: str):
         if "processed" not in self.data:
