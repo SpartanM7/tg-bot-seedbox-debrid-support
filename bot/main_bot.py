@@ -365,8 +365,9 @@ def status(update: Update, context: CallbackContext):
         if active:
             lines.append("\n⬇️ *Active Transfers:*")
             for tid, t in active.items():
+                name = escape_markdown(t['name'])
                 start_ago = int(time.time() - t['start_time'])
-                lines.append(f"• `{t['name'][:25]}`\n  └ {t['status'].title()} | {start_ago}s ago")
+                lines.append(f"• `{name[:25]}`\n  └ {t['status'].title()} | {start_ago}s ago")
         
         # 2. Seedbox (rtorrent)
         if sb_client:
@@ -375,7 +376,8 @@ def status(update: Update, context: CallbackContext):
             if active_sb:
                 lines.append("\n📦 *Seedbox:*")
                 for t in active_sb:
-                    lines.append(f"• `{t['name'][:25]}`\n  └ {t['state'].title()} | {t['progress']:.1f}%")
+                    name = escape_markdown(t['name'])
+                    lines.append(f"• `{name[:25]}`\n  └ {t['state'].title()} | {t['progress']:.1f}%")
         
         # 3. Real-Debrid
         if rd_client:
@@ -384,7 +386,8 @@ def status(update: Update, context: CallbackContext):
             if active_rd:
                 lines.append("\n☁️ *Real-Debrid:*")
                 for t in active_rd:
-                    lines.append(f"• `{t['filename'][:25]}`\n  └ {t['status'].replace('_', ' ').title()} | {t['progress']}%")
+                    name = escape_markdown(t['filename'])
+                    lines.append(f"• `{name[:25]}`\n  └ {t['status'].replace('_', ' ').title()} | {t['progress']}%")
         
         # 4. yt-dlp Queue
         # Note: job_status is a dict of all jobs. We want active ones.
