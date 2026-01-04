@@ -7,6 +7,7 @@ import os
 import time
 import logging
 import threading
+from typing import Optional, List, Dict, Any
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
 
