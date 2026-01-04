@@ -343,7 +343,7 @@ class Downloader:
         # Cleanup thumbnail
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
-走    
+    
     def _upload_telegram_large(self, path: str, chat_id: int, task_id: Optional[str] = None, thumb_path: str = None):
         """Upload large file using Telethon (user API)."""
         try:
@@ -369,7 +369,7 @@ class Downloader:
         except Exception as e:
             self._notify(chat_id, f"❌ Telethon upload failed: {e}")
             logger.error(f"Telethon upload error: {e}")
-走
+
     def _upload_gdrive(self, path: str, chat_id: Optional[int] = None, task_id: Optional[str] = None):
         """Upload to Google Drive via rclone."""
         self._notify(chat_id, f"⬆️ Uploading to GDrive: {os.path.basename(path)}")
