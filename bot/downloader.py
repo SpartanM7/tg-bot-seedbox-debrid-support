@@ -217,7 +217,8 @@ class Downloader:
             def sftp_cb(transferred, total):
                 if task_id and total > 0:
                     percent = (transferred / total) * 100
-                    self._update_task_status(task_id, f"downloading (SFTP {percent:.1f}%)")
+                    if int(percent) % 5 == 0:
+                        self._update_task_status(task_id, f"downloading (SFTP {percent:.1f}%)")
 
             try:
                 attr = sftp.stat(remote_path)
@@ -246,9 +247,13 @@ class Downloader:
             if str(entry).startswith('d'):
                 self._download_sftp_dir(sftp, remote_path, local_path, task_id)
             else:
-                if task_id:
-                    self._update_task_status(task_id, f"downloading {entry.filename}")
-                sftp.get(remote_path, local_path)
+                def cb(t, total):
+                    if task_id and total > 0:
+                        p = (t / total) * 100
+                        if int(p) % 10 == 0:
+                             self._update_task_status(task_id, f"downloading {entry.filename} ({p:.1f}%)")
+                if task_id: self._update_task_status(task_id, f"downloading {entry.filename} (0.0%)")
+                sftp.get(remote_path, local_path, callback=cb)
 
     def _upload_telegram(self, path: str, chat_id: int, task_id: Optional[str] = None):
         """Upload to Telegram, using Telethon for large files."""
