@@ -6,17 +6,10 @@ Connects to real Real-Debrid, rTorrent, and yt-dlp implementations.
 import os
 import logging
 import threading
-from typing import List
-
-try:
-    from telegram import Update
-    from telegram.ext import Updater, CommandHandler, CallbackContext
-    TELEGRAM_LIB_AVAILABLE = True
-except Exception:
-    TELEGRAM_LIB_AVAILABLE = False
-    class Update: pass
-    class CallbackContext: pass
-    class Updater: pass
+import telegram
+print(f"DEBUG: telegram version: {getattr(telegram, '__version__', 'unknown')}")
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, CallbackContext
 
 from bot.config import BOT_TOKEN
 from bot.clients.realdebrid import RDClient, RealDebridNotConfigured, RDAPIError
