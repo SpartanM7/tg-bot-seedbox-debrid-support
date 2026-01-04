@@ -14,11 +14,12 @@ lines = content.splitlines()
 has_api_id = any("TELEGRAM_API_ID" in line for line in lines)
 has_api_hash = any("TELEGRAM_API_HASH" in line for line in lines)
 has_phone = any("TELEGRAM_PHONE" in line for line in lines)
+has_drive = any("DRIVE_DEST" in line for line in lines)
 
-if has_api_id and has_api_hash and has_phone:
-    print("✅ Telegram credentials already in .env")
+if has_api_id and has_api_hash and has_phone and has_drive:
+    print("✅ Telegram and GDrive credentials already in .env")
 else:
-    print("Adding Telegram credentials to .env...")
+    print("Updating .env...")
     
     # Remove any existing partial Telegram lines
     lines = [l for l in lines if not l.strip().startswith("TELEGRAM_")]
@@ -29,6 +30,10 @@ else:
     lines.append("TELEGRAM_API_ID=1411674")
     lines.append("TELEGRAM_API_HASH=5122514c8acb532040486d383b4674c7")
     lines.append("TELEGRAM_PHONE=+918368395994")
+    
+    lines.append("")
+    lines.append("# Google Drive Configuration")
+    lines.append("DRIVE_DEST=gdrive:/")
     
     # Write back
     env_path.write_text("\n".join(lines) + "\n")
