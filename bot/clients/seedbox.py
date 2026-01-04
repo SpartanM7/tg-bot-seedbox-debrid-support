@@ -50,15 +50,22 @@ class SeedboxClient:
             else:
                 final_rpc_url = raw_url
 
+        # Feral Hosting quirk: The RPC endpoint often requires 'rutorrent' as the literal username,
+        # even if your account username (used for SFTP) is different.
+        rpc_user = self.user
+        if "feralhosting.com" in final_rpc_url and rpc_user != "rutorrent":
+            logger.info("Detected Feral Hosting: using 'rutorrent' as the RPC username (Auth override)")
+            rpc_user = "rutorrent"
+
         # Inject auth into URL
         if "://" in final_rpc_url:
             scheme, rest = final_rpc_url.split("://", 1)
             # Remove any existing user:pass if present in rest to avoid double auth
             if "@" in rest:
                 rest = rest.split("@", 1)[1]
-            self.rpc_url = f"{scheme}://{self.user}:{self.password}@{rest}"
+            self.rpc_url = f"{scheme}://{rpc_user}:{self.password}@{rest}"
         else:
-            self.rpc_url = f"https://{self.user}:{self.password}@{final_rpc_url}"
+            self.rpc_url = f"https://{rpc_user}:{self.password}@{final_rpc_url}"
 
         logger.info(f"Initialized Seedbox client at {self.rpc_url.replace(self.password, '********')}")
         self.server = xmlrpc.client.ServerProxy(self.rpc_url)
