@@ -419,10 +419,13 @@ def create_app(token: str) -> Updater:
     return updater
 
 def run():
-    token = BOT_TOKEN or os.getenv("BOT_TOKEN")
+    token = (BOT_TOKEN or os.getenv("BOT_TOKEN", "")).strip()
     if not token:
         logger.error("BOT_TOKEN not set")
         return
+    
+    # Debug info (safe part only)
+    logger.info(f"DEBUG: Token loaded. Length: {len(token)} | Starts with: {token[:4]}... | Ends with: ...{token[-4:]} | Hidden chars check: {repr(token) == repr(token.strip())}")
 
     updater = create_app(token)
     logger.info("Starting Bot...")
