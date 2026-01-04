@@ -11,10 +11,7 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-RUTORRENT_URL = os.getenv("RUTORRENT_URL")
-RUTORRENT_USER = os.getenv("RUTORRENT_USER")
-RUTORRENT_PASS = os.getenv("RUTORRENT_PASS")
-
+from bot.config import RUTORRENT_URL, RUTORRENT_USER, RUTORRENT_PASS, SEEDBOX_RPC_URL
 
 class SeedboxNotConfigured(RuntimeError):
     pass
@@ -25,23 +22,43 @@ class SeedboxCommunicationError(RuntimeError):
 
 
 class SeedboxClient:
-    def __init__(self, url: str = None, user: str = None, password: str = None):
-        raw_url = url or RUTORRENT_URL
+    def __init__(self, url: str = None, user: str = None, password: str = None, rpc_url: str = None):
         self.user = user or RUTORRENT_USER
         self.password = password or RUTORRENT_PASS
         
-        if not (raw_url and self.user and self.password):
-            raise SeedboxNotConfigured("Seedbox (rTorrent) not fully configured (URL, USER, PASS)")
+        # Priority: explicit rpc_url -> env SEEDBOX_RPC_URL -> derived from RUTORRENT_URL
+        final_rpc_url = rpc_url or SEEDBOX_RPC_URL
+        
+        if not final_rpc_url:
+            raw_url = url or RUTORRENT_URL
+            if not (raw_url and self.user and self.password):
+                raise SeedboxNotConfigured("Seedbox (rTorrent) not fully configured (URL, USER, PASS)")
+            
+            # If it's Feral Hosting or looks like a web UI, try to guess the RPC path
+            # Feral often uses: https://server.feralhosting.com/username/plugins/rpc/rpc.php
+            if "feralhosting.com" in raw_url and "rpc.php" not in raw_url:
+                # Remove trailing slash if any
+                base = raw_url.rstrip("/")
+                # If it ends in /rutorrent, rpc is usually one level up or same level
+                if base.endswith("/rutorrent"):
+                    final_rpc_url = base.replace("/rutorrent", "/plugins/rpc/rpc.php")
+                else:
+                    final_rpc_url = f"{base}/plugins/rpc/rpc.php"
+                logger.info(f"Detected Feral Hosting, using RPC endpoint: {final_rpc_url}")
+            else:
+                final_rpc_url = raw_url
 
-        # Inject auth into URL if needed, or rely on transport. 
-        # Standard xmlrpc.client supports http://user:pass@host/RPC2
-        if "://" in raw_url:
-            scheme, rest = raw_url.split("://", 1)
+        # Inject auth into URL
+        if "://" in final_rpc_url:
+            scheme, rest = final_rpc_url.split("://", 1)
+            # Remove any existing user:pass if present in rest to avoid double auth
+            if "@" in rest:
+                rest = rest.split("@", 1)[1]
             self.rpc_url = f"{scheme}://{self.user}:{self.password}@{rest}"
         else:
-            # Assume https if missing
-            self.rpc_url = f"https://{self.user}:{self.password}@{raw_url}"
+            self.rpc_url = f"https://{self.user}:{self.password}@{final_rpc_url}"
 
+        logger.info(f"Initialized Seedbox client at {self.rpc_url.replace(self.password, '********')}")
         self.server = xmlrpc.client.ServerProxy(self.rpc_url)
 
     def _call(self, method: str, *args) -> Any:
