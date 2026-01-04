@@ -8,7 +8,7 @@ import os
 import time
 import json
 import threading
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 REDIS_URL = os.getenv('REDIS_URL')
 
