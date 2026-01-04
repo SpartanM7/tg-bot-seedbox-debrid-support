@@ -151,10 +151,10 @@ class JsonFileState(StateManager):
         return self.data.get("intents", {}).get(item_id)
 
 def get_state() -> StateManager:
-    redis_url = os.getenv("REDIS_URL")
-    if redis_url:
+    from bot.config import REDIS_URL
+    if REDIS_URL:
         try:
-            return RedisState(redis_url)
+            return RedisState(REDIS_URL)
         except Exception as e:
             logger.warning(f"Redis configured but failed to connect: {e}. Falling back to file.")
     return JsonFileState()

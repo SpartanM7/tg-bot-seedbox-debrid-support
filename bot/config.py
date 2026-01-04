@@ -55,6 +55,7 @@ TELEGRAM_API_ID = get_env_safe("TELEGRAM_API_ID")
 TELEGRAM_API_HASH = get_env_safe("TELEGRAM_API_HASH")
 TELEGRAM_PHONE = get_env_safe("TELEGRAM_PHONE")
 TELEGRAM_SESSION = get_env_safe("TELEGRAM_SESSION")  # String session for Heroku
+REDIS_URL = get_env_safe("REDIS_URL")
 
 
 

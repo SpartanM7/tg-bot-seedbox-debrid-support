@@ -36,15 +36,17 @@ class SeedboxClient:
             
             # If it's Feral Hosting or looks like a web UI, try to guess the RPC path
             # Feral often uses: https://server.feralhosting.com/username/plugins/rpc/rpc.php
-            if "feralhosting.com" in raw_url and "rpc.php" not in raw_url:
-                # Remove trailing slash if any
+            # Feral Hosting common paths:
+            # 1. /username/rtorrent/rpc (Most common for newer setups)
+            # 2. /username/plugins/rpc/rpc.php (ruTorrent plugin)
+            if "feralhosting.com" in raw_url and "rpc" not in raw_url:
                 base = raw_url.rstrip("/")
-                # If it ends in /rutorrent, rpc is usually one level up or same level
-                if base.endswith("/rutorrent"):
-                    final_rpc_url = base.replace("/rutorrent", "/plugins/rpc/rpc.php")
-                else:
-                    final_rpc_url = f"{base}/plugins/rpc/rpc.php"
-                logger.info(f"Detected Feral Hosting, using RPC endpoint: {final_rpc_url}")
+                if "/rutorrent" in base:
+                    base = base.replace("/rutorrent", "")
+                
+                # We'll try /rtorrent/rpc by default as it's more modern on Feral
+                final_rpc_url = f"{base}/rtorrent/rpc"
+                logger.info(f"Detected Feral Hosting, guessing RPC endpoint: {final_rpc_url}")
             else:
                 final_rpc_url = raw_url
 

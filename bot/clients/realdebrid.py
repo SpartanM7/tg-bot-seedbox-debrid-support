@@ -14,8 +14,7 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-RD_ACCESS_TOKEN = os.getenv("RD_ACCESS_TOKEN")
-RD_API_BASE = os.getenv("RD_API_BASE", "https://api.real-debrid.com/rest/1.0")
+from bot.config import RD_ACCESS_TOKEN, RD_API_BASE
 
 
 class RealDebridNotConfigured(RuntimeError):

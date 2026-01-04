@@ -10,7 +10,7 @@ import json
 import threading
 from typing import Optional, Dict, Any, List
 
-REDIS_URL = os.getenv('REDIS_URL')
+from bot.config import REDIS_URL
 
 if REDIS_URL:
     import redis
