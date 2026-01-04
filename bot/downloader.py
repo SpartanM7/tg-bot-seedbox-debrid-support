@@ -319,14 +319,41 @@ class Downloader:
                 sftp.get(remote_path, local_path, callback=cb)
 
     def _upload_telegram(self, path: str, chat_id: int, task_id: Optional[str] = None):
-        """Upload to Telegram, using Telethon for large files."""
+        """Upload to Telegram, using Telethon for large files. Splits if > 2GB."""
         if not self.updater or not chat_id:
             logger.warning("Telegram upload skipped: no updater/chat_id")
             return
 
         size = os.path.getsize(path)
+        
+        # Handle splitting if too large
         if size > MAX_TG_SIZE:
-             self._notify(chat_id, f"⚠️ File {os.path.basename(path)} too large for Telegram ({size / 1024**3:.2f} GB). Skipping.")
+             self._notify(chat_id, f"📦 File `{os.path.basename(path)}` is {size / 1024**3:.2f}GB. Splitting for upload...")
+             from bot.utils.splitter import split_file
+             try:
+                 parts = split_file(path)
+                 if len(parts) > 1:
+                     for i, part in enumerate(parts):
+                         # If it's a part, thumbnailing is tricky, we might just use the same thumb for all or 
+                         # let the internal helper handle it.
+                         self._notify(chat_id, f"⬆️ Uploading part {i+1}/{len(parts)}: `{os.path.basename(part)}`")
+                         self._upload_telegram_real(part, chat_id, task_id)
+                         # Cleanup part (don't delete original if it was somehow returned)
+                         if os.path.exists(part) and part != path:
+                             os.remove(part)
+                     return
+             except Exception as e:
+                 logger.error(f"Splitting failed: {e}")
+                 self._notify(chat_id, f"❌ Splitting failed: {e}. Skipping.")
+                 return
+
+        self._upload_telegram_real(path, chat_id, task_id)
+
+    def _upload_telegram_real(self, path: str, chat_id: int, task_id: Optional[str] = None):
+        """Internal helper for actual upload of a single file or part."""
+        size = os.path.getsize(path)
+        if size > MAX_TG_SIZE:
+             self._notify(chat_id, f"⚠️ File {os.path.basename(path)} still too large for Telegram ({size / 1024**3:.2f} GB). Skipping.")
              return
 
         # Generate thumbnail for videos
