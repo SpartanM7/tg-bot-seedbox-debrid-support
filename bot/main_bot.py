@@ -116,8 +116,9 @@ def rd_torrents(update: Update, context: CallbackContext):
             
             # Format status for display
             display_status = f"{icon} {status.replace('_', ' ').title()}"
+            tid = i.get('id', 'N/A')
             
-            line = f"`{display_status:<12} | {progress:>6}% |` {filename}"
+            line = f"`{display_status:<12} | {progress:>6}% |` {filename}\n└ ID: `{tid}`"
             lines.append(line)
         
         text = "\n".join(lines)
@@ -164,8 +165,9 @@ def rd_downloads(update: Update, context: CallbackContext):
             if len(filename) > 30:
                 filename = filename[:28] + ".."
             filename = escape_markdown(filename)
+            tid = i.get('id', 'N/A')
             
-            line = f"`{generated:<12} | {fmt_bytes(filesize):<8} |` {filename}"
+            line = f"`{generated:<12} | {fmt_bytes(filesize):<8} |` {filename}\n└ ID: `{tid}`"
             lines.append(line)
         
         text = "\n".join(lines)
@@ -226,7 +228,8 @@ def sb_torrents(update: Update, context: CallbackContext):
             # line = f"{icon} `{state:<10}`: {name} *({progress:.1f}%)*" # Old style alternative
             
             # Table style
-            line = f"`{state:<10} | {progress:>5.1f}% |` {name}"
+            shash = i.get('hash', 'N/A')
+            line = f"`{state:<10} | {progress:>5.1f}% |` {name}\n└ Hash: `{shash}`"
             lines.append(line)
         
         # Split if too long
