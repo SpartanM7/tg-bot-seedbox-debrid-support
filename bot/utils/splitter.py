@@ -30,17 +30,33 @@ def _split_binary(path: str) -> List[str]:
     base_name = os.path.basename(path)
     dir_name = os.path.dirname(path)
     
+    # Use a small buffer to avoid memory spikes
+    BUFFER_SIZE = 1024 * 1024 # 1MB
+    
     with open(path, 'rb') as f:
         part_idx = 1
         while True:
-            chunk = f.read(CHUNK_SIZE)
-            if not chunk:
-                break
             part_path = os.path.join(dir_name, f"{base_name}.part{part_idx:03d}")
+            bytes_written = 0
+            
             with open(part_path, 'wb') as out:
-                out.write(chunk)
+                while bytes_written < CHUNK_SIZE:
+                    chunk = f.read(min(BUFFER_SIZE, CHUNK_SIZE - bytes_written))
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    bytes_written += len(chunk)
+            
+            if bytes_written == 0:
+                # No more data read, delete the empty part file and break
+                if os.path.exists(part_path):
+                    os.remove(part_path)
+                break
+                
             parts.append(part_path)
+            logger.info(f"Created part: {os.path.basename(part_path)} ({bytes_written / 1024**2:.1f} MB)")
             part_idx += 1
+            
     return parts
 
 def _split_video(path: str) -> List[str]:
