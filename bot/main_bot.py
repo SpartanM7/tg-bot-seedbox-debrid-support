@@ -184,7 +184,7 @@ def rd_unrestrict(update: Update, context: CallbackContext):
     if not rd_client: return update.message.reply_text("RD not configured")
     if not context.args: return update.message.reply_text("Usage: /rd_unrestrict <link>")
     try:
-        res = rd_client.unrestrict_link(context.args[0])
+        res = rd_client.unrestrict_link(context.args[0], remote=True)
         dl = res.get('download')
         update.message.reply_text(f"Download Link: {dl}")
     except Exception as e:
