@@ -159,6 +159,7 @@ class Downloader:
         
         transport = paramiko.Transport((SEEDBOX_HOST, SEEDBOX_SFTP_PORT))
         try:
+            logger.info(f"DEBUG: Attempting SFTP login with user: {SFTP_USER}")
             transport.connect(username=SFTP_USER, password=SFTP_PASS)
             sftp = paramiko.SFTPClient.from_transport(transport)
             
