@@ -73,7 +73,7 @@ class Monitor:
                     # Let's handle all unrestricted links
                     for link in links:
                         try:
-                            unrestricted = self.rd.unrestrict_link(link)
+                            unrestricted = self.rd.unrestrict_link(link, remote=True)
                             dl_url = unrestricted['download']
                             name = unrestricted['filename']
                             

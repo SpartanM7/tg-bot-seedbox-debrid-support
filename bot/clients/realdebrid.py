@@ -112,9 +112,14 @@ class RDClient:
             logger.error(f"Error checking cache status: {e}")
             return False
 
-    def unrestrict_link(self, link: str) -> Dict[str, Any]:
-        """Unrestrict a hoster link (e.g. from a torrent download or DDL)."""
-        return self._request("POST", "/unrestrict/link", data={"link": link})
+    def unrestrict_link(self, link: str, remote: bool = False) -> Dict[str, Any]:
+        """Unrestrict a hoster link (e.g. from a torrent download or DDL).
+        Set remote=True to use 'Remote Traffic' (required for server-side downloads).
+        """
+        data = {"link": link}
+        if remote:
+            data["remote"] = "1"
+        return self._request("POST", "/unrestrict/link", data=data)
 
     def add_magnet(self, magnet: str) -> Dict[str, Any]:
         """Add a magnet to Real-Debrid torrents and return the created resource."""

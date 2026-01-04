@@ -354,7 +354,7 @@ def rd_download(update: Update, context: CallbackContext):
                      name = filename # use the one we found
                      file_size = 0
                 else:
-                    unrestricted = rd_client.unrestrict_link(link)
+                    unrestricted = rd_client.unrestrict_link(link, remote=True)
                     dl_url = unrestricted['download']
                     name = unrestricted['filename']
                     file_size = unrestricted.get('filesize', 0)
