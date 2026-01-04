@@ -6,8 +6,6 @@ Connects to real Real-Debrid, rTorrent, and yt-dlp implementations.
 import os
 import logging
 import threading
-import telegram
-print(f"DEBUG: telegram version: {getattr(telegram, '__version__', 'unknown')}")
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
 
