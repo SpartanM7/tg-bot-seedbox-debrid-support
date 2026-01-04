@@ -57,12 +57,8 @@ class Downloader:
                 'start_time': time.time()
             }
         
-        try:
-            self._process_item_logic(download_url, name, dest, chat_id, size, task_id)
-        finally:
-            with self._tasks_lock:
-                if task_id in self._active_tasks:
-                    del self._active_tasks[task_id]
+        # The background logic or queue will now manage the task_id entry in self._active_tasks
+        self._process_item_logic(download_url, name, dest, chat_id, size, task_id)
 
     def _process_item_logic(self, download_url: str, name: str, dest: str, chat_id: Optional[int], size: int, task_id: str):
         # Check if we should queue
@@ -165,6 +161,10 @@ class Downloader:
         except Exception as e:
             logger.error(f"Failed to process {name}: {e}")
             self._notify(chat_id, f"❌ Error processing {name}: {e}")
+        finally:
+            with self._tasks_lock:
+                if task_id in self._active_tasks:
+                    del self._active_tasks[task_id]
 
     def _download_file(self, url: str, dest_path: str, task_id: Optional[str] = None) -> str:
         """Download file with progress logging. Supports http(s) and sftp."""
