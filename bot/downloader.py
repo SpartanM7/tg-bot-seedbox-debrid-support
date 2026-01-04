@@ -173,9 +173,17 @@ class Downloader:
         
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))
+            downloaded = 0
             with open(dest_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
+                    if task_id and total_size > 0:
+                        downloaded += len(chunk)
+                        # Every ~5MB
+                        if downloaded % (5 * 1024 * 1024) < 16384:
+                            percent = (downloaded / total_size) * 100
+                            self._update_task_status(task_id, f"downloading ({percent:.1f}%)")
         return dest_path
 
     def _download_sftp(self, url: str, dest_path: str, task_id: Optional[str] = None) -> str:
@@ -206,12 +214,18 @@ class Downloader:
             )
             sftp = ssh.open_sftp()
             
+            def sftp_cb(transferred, total):
+                if task_id and total > 0:
+                    percent = (transferred / total) * 100
+                    self._update_task_status(task_id, f"downloading (SFTP {percent:.1f}%)")
+
             try:
                 attr = sftp.stat(remote_path)
                 if str(attr).startswith('d'):
-                    self._download_sftp_dir(sftp, remote_path, dest_path)
+                    # For directories, we'll just update per-file status
+                    self._download_sftp_dir(sftp, remote_path, dest_path, task_id)
                 else:
-                    sftp.get(remote_path, dest_path)
+                    sftp.get(remote_path, dest_path, callback=sftp_cb)
             except IOError as e:
                 raise RuntimeError(f"SFTP Error: {e}")
                 
@@ -224,14 +238,16 @@ class Downloader:
             
         return dest_path
 
-    def _download_sftp_dir(self, sftp, remote_dir, local_dir):
+    def _download_sftp_dir(self, sftp, remote_dir, local_dir, task_id: Optional[str] = None):
         os.makedirs(local_dir, exist_ok=True)
         for entry in sftp.listdir_attr(remote_dir):
             remote_path = remote_dir + "/" + entry.filename
             local_path = os.path.join(local_dir, entry.filename)
             if str(entry).startswith('d'):
-                self._download_sftp_dir(sftp, remote_path, local_path)
+                self._download_sftp_dir(sftp, remote_path, local_path, task_id)
             else:
+                if task_id:
+                    self._update_task_status(task_id, f"downloading {entry.filename}")
                 sftp.get(remote_path, local_path)
 
     def _upload_telegram(self, path: str, chat_id: int, task_id: Optional[str] = None):
@@ -249,13 +265,13 @@ class Downloader:
         
         # Use Telethon for files >50MB, bot API for smaller files
         if size > 50 * 1024 * 1024:
-            self._upload_telegram_large(path, chat_id)
+            self._upload_telegram_large(path, chat_id, task_id)
         else:
             # Bot API for small files (faster)
             with open(path, 'rb') as f:
                 self.updater.bot.send_document(chat_id=chat_id, document=f, filename=os.path.basename(path))
     
-    def _upload_telegram_large(self, path: str, chat_id: int):
+    def _upload_telegram_large(self, path: str, chat_id: int, task_id: Optional[str] = None):
         """Upload large file using Telethon (user API)."""
         try:
             from bot.telethon_uploader import get_telethon_uploader
@@ -263,24 +279,22 @@ class Downloader:
             
             uploader = get_telethon_uploader()
             if not uploader:
-                self._notify(chat_id, "⚠️ Telethon not configured. Large file upload failed. Set TELEGRAM_API_ID and TELEGRAM_API_HASH.")
+                self._notify(chat_id, "⚠️ Telethon not configured. Large file upload failed.")
                 return
             
-            self._notify(chat_id, f"⬆️ Uploading via Telethon (user API)...")
+            self._notify(chat_id, f"⬆️ Uploading via Telethon...")
             
             # Progress callback
             def progress(current, total):
-                percent = (current / total) * 100
-                # Only notify every 10%
-                if int(percent) % 10 == 0 and int(percent) != 0:
-                    logger.info(f"Upload progress: {percent:.0f}%")
+                if task_id and total > 0:
+                    percent = (current / total) * 100
+                    # Only update system status every roughly 5%
+                    if int(percent) % 5 == 0:
+                        self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
             
             # Run async upload
             asyncio.run(uploader.upload_file(path, chat_id, progress_callback=progress))
             
-        except ImportError:
-            self._notify(chat_id, "⚠️ Telethon not installed. Install with: pip install telethon")
-            logger.error("Telethon not available for large file upload")
         except Exception as e:
             self._notify(chat_id, f"❌ Telethon upload failed: {e}")
             logger.error(f"Telethon upload error: {e}")
