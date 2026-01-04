@@ -24,9 +24,10 @@ except ImportError:
     paramiko = None
 
 from bot.utils import packager
+from bot.utils.thumbnailer import generate_thumbnail
 from bot.state import get_state
 from bot.storage_queue import get_storage_queue
-from bot.config import SEEDBOX_HOST, SEEDBOX_SFTP_PORT, RUTORRENT_USER, RUTORRENT_PASS, DRIVE_DEST, SFTP_USER, SFTP_PASS
+from bot.config import SEEDBOX_HOST, SEEDBOX_SFTP_PORT, RUTORRENT_USER, RUTORRENT_PASS, DRIVE_DEST, SFTP_USER, SFTP_PASS, TG_UPLOAD_TARGET
 
 logger = logging.getLogger(__name__)
 
@@ -153,9 +154,35 @@ class Downloader:
                 else:
                     os.remove(local_path)
                 
-            self._notify(chat_id, f"✅ Completed: {name}")
+            # 5. Final Report
+            report = f"✅ **Completed Transfer**\n\n"
+            report += f"📁 **Name**: `{name}`\n"
+            if "sftp://" not in url: # If it was a torrent/box hash, we might have it
+                 # Try to extract hash from URL or use name
+                 pass
+
+            report += "\n🚀 **Uploaded Files:**\n"
+            for item in items_to_upload:
+                if item.get("skipped"): continue
+                fname = item['name']
+                # Telegram link is hard to get via Telethon easily without extra logic, 
+                # but we can list the names.
+                report += f"• `{fname}`\n"
             
-            # 5. Process queue if space freed up
+            # Management Buttons (stubs for the bot to handle)
+            report += f"\n🛠 **Management:**\n"
+            # Extract hash if present in URL (box hash usually 40 chars)
+            box_hash = None
+            if len(url) == 40 or "hash=" in url:
+                 box_hash = url if len(url) == 40 else url.split("hash=")[1].split("&")[0]
+            
+            if box_hash:
+                report += f"停止: `/sb_stop {box_hash}`\n"
+                report += f"删除: `/sb_delete {box_hash}`\n"
+
+            self._notify(chat_id, report)
+            
+            # 6. Process queue if space freed up
             self._process_queue()
             
         except Exception as e:
@@ -286,17 +313,38 @@ class Downloader:
              self._notify(chat_id, f"⚠️ File {os.path.basename(path)} too large for Telegram ({size / 1024**3:.2f} GB). Skipping.")
              return
 
+        # Generate thumbnail for videos
+        thumb_path = None
+        ext = os.path.splitext(path)[1].lower()
+        if ext in ['.mp4', '.mkv', '.avi', '.mov', '.m4v']:
+            thumb_path = generate_thumbnail(path)
+
         self._notify(chat_id, f"⬆️ Uploading to Telegram: {os.path.basename(path)}")
         
         # Use Telethon for files >50MB, bot API for smaller files
         if size > 50 * 1024 * 1024:
-            self._upload_telegram_large(path, chat_id, task_id)
+            self._upload_telegram_large(path, chat_id, task_id, thumb_path=thumb_path)
         else:
-            # Bot API for small files (faster)
+            # Bot API for small files
+            target = TG_UPLOAD_TARGET or chat_id
             with open(path, 'rb') as f:
-                self.updater.bot.send_document(chat_id=chat_id, document=f, filename=os.path.basename(path))
-    
-    def _upload_telegram_large(self, path: str, chat_id: int, task_id: Optional[str] = None):
+                thumb_file = open(thumb_path, 'rb') if thumb_path else None
+                try:
+                    self.updater.bot.send_document(
+                        chat_id=target, 
+                        document=f, 
+                        filename=os.path.basename(path),
+                        thumb=thumb_file,
+                        caption=os.path.basename(path)
+                    )
+                finally:
+                    if thumb_file: thumb_file.close()
+
+        # Cleanup thumbnail
+        if thumb_path and os.path.exists(thumb_path):
+            os.remove(thumb_path)
+走    
+    def _upload_telegram_large(self, path: str, chat_id: int, task_id: Optional[str] = None, thumb_path: str = None):
         """Upload large file using Telethon (user API)."""
         try:
             from bot.telethon_uploader import get_telethon_uploader
@@ -307,8 +355,6 @@ class Downloader:
                 self._notify(chat_id, "⚠️ Telethon not configured. Large file upload failed.")
                 return
             
-            self._notify(chat_id, f"⬆️ Uploading via Telethon...")
-            
             # Progress callback
             def progress(current, total):
                 if task_id and total > 0:
@@ -318,12 +364,12 @@ class Downloader:
                         self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
             
             # Run async upload
-            asyncio.run(uploader.upload_file(path, chat_id, progress_callback=progress))
+            asyncio.run(uploader.upload_file(path, chat_id, thumb_path=thumb_path, progress_callback=progress))
             
         except Exception as e:
             self._notify(chat_id, f"❌ Telethon upload failed: {e}")
             logger.error(f"Telethon upload error: {e}")
-
+走
     def _upload_gdrive(self, path: str, chat_id: Optional[int] = None, task_id: Optional[str] = None):
         """Upload to Google Drive via rclone."""
         self._notify(chat_id, f"⬆️ Uploading to GDrive: {os.path.basename(path)}")

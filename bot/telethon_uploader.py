@@ -18,10 +18,12 @@ except ImportError:
     TelegramClient = None
     StringSession = None
 
-from bot.config import TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE, TELEGRAM_SESSION
+from bot.config import TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE, TELEGRAM_SESSION, TG_UPLOAD_TARGET
 
 logger = logging.getLogger(__name__)
 
+# Global lock to prevent concurrent asyncio.run in threads
+_client_lock = threading.Lock()
 
 class TelethonUploader:
     """Uploader using Telethon (user API) for large files."""
@@ -56,32 +58,48 @@ class TelethonUploader:
             self._connected = True
             logger.info("Telethon client connected")
     
-    async def upload_file(self, file_path: str, chat_id: int, caption: str = None, progress_callback=None):
+    async def upload_file(self, file_path: str, chat_id: int, caption: str = None, thumb_path: str = None, progress_callback=None):
         """Upload a file to Telegram using user API.
         
         Args:
             file_path: Path to file to upload
-            chat_id: Telegram chat ID
+            chat_id: Telegram chat ID (will be overridden by TG_UPLOAD_TARGET if set)
             caption: Optional caption
+            thumb_path: Optional thumbnail image path
             progress_callback: Callable(current, total) for progress updates
         """
-        await self.connect()
-        
-        file_name = os.path.basename(file_path)
-        file_size = os.path.getsize(file_path)
-        
-        logger.info(f"Uploading {file_name} ({file_size} bytes) to chat {chat_id}")
-        
-        # Upload as document with custom attributes
-        await self.client.send_file(
-            chat_id,
-            file_path,
-            caption=caption,
-            attributes=[DocumentAttributeFilename(file_name)],
-            progress_callback=progress_callback
-        )
-        
-        logger.info(f"Successfully uploaded {file_name}")
+        # Ensure we don't run concurrent uploads on the same client in different threads
+        with _client_lock:
+            await self.connect()
+            
+            file_name = os.path.basename(file_path)
+            file_size = os.path.getsize(file_path)
+            
+            # Use TG_UPLOAD_TARGET if set, otherwise use the provided chat_id
+            target = TG_UPLOAD_TARGET or chat_id
+            try:
+                # Try converting to int if it looks like an ID
+                target = int(target)
+            except Exception:
+                pass
+
+            logger.info(f"Uploading {file_name} ({file_size} bytes) to target {target}")
+            
+            # Use filename as default caption if none provided
+            final_caption = caption or file_name
+
+            # Upload as document with custom attributes
+            await self.client.send_file(
+                target,
+                file_path,
+                caption=final_caption,
+                thumb=thumb_path,
+                attributes=[DocumentAttributeFilename(file_name)],
+                progress_callback=progress_callback,
+                supports_streaming=True
+            )
+            
+            logger.info(f"Successfully uploaded {file_name}")
     
     async def disconnect(self):
         """Disconnect client."""

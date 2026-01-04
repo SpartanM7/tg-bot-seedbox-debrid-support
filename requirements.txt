@@ -6,3 +6,4 @@ requests
 redis
 paramiko>=4.0
 telethon>=1.24.0
+psutil

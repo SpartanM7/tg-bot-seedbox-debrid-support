@@ -18,6 +18,7 @@ from bot.rss import FeedManager, Router
 from bot.monitor import Monitor
 from bot.downloader import Downloader
 from bot.state import get_state
+from bot.utils.system_info import format_system_metrics
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -241,11 +242,17 @@ def sb_torrents(update: Update, context: CallbackContext):
         update.message.reply_text(f"Error: {e}")
 
 def sb_stop(update: Update, context: CallbackContext):
-    if not sb_client: return update.message.reply_text("Seedbox not configured")
-    if not context.args: return update.message.reply_text("Usage: /sb_stop <hash>")
+    """Stop a seedbox torrent."""
+    h = _get_arg(context)
+    if not h:
+        update.message.reply_text("Usage: `/sb_stop <hash>`", parse_mode="Markdown")
+        return
+    if not sb_client:
+        update.message.reply_text("Seedbox not configured.")
+        return
     try:
-        sb_client.stop_torrent(context.args[0])
-        update.message.reply_text("Stopped.")
+        sb_client.stop_torrent(h)
+        update.message.reply_text(f"🛑 Stopped torrent `{h}`", parse_mode="Markdown")
     except Exception as e:
         update.message.reply_text(f"Error: {e}")
 
@@ -259,17 +266,26 @@ def sb_start(update: Update, context: CallbackContext):
         update.message.reply_text(f"Error: {e}")
 
 def sb_delete(update: Update, context: CallbackContext):
-    if not sb_client: return update.message.reply_text("Seedbox not configured")
-    if not context.args: return update.message.reply_text("Usage: /sb_delete <hash>")
+    """Delete a seedbox torrent."""
+    h = _get_arg(context)
+    if not h:
+        update.message.reply_text("Usage: `/sb_delete <hash>`", parse_mode="Markdown")
+        return
+    if not sb_client:
+        update.message.reply_text("Seedbox not configured.")
+        return
     try:
-        sb_client.delete_torrent(context.args[0])
-        update.message.reply_text("Deleted.")
+        sb_client.delete_torrent(h)
+        update.message.reply_text(f"🗑 Deleted torrent `{h}`", parse_mode="Markdown")
     except Exception as e:
         update.message.reply_text(f"Error: {e}")
 
 # Helper functions for new commands
-def _get_arg(context: CallbackContext) -> str | None:
-    return context.args[0] if context.args else None
+def _get_arg(context: CallbackContext) -> Optional[str]:
+    """Helper to get the first argument from a command."""
+    if context.args:
+        return context.args[0]
+    return None
 
 def _check_rd(update: Update) -> bool:
     if not rd_client:
@@ -428,6 +444,12 @@ def status(update: Update, context: CallbackContext):
                  lines.append(f"• `{jid[:8]}...`\n  └ {jinfo['status'].title()} | {jinfo.get('dest', 'telegram').upper()}")
         if len(lines) == 1:
             lines.append("\n✅ Everything is idle.")
+        
+        # 5. System Metrics
+        try:
+            lines.append("\n" + format_system_metrics())
+        except Exception as e:
+            logger.error(f"Error formatting system metrics: {e}")
             
         text = "\n".join(lines)
         update.message.reply_text(text, parse_mode="Markdown")
@@ -582,6 +604,8 @@ def create_app(token: str) -> Updater:
     dp.add_handler(CommandHandler("ytdl_gdrive", ytdl_gdrive))
     dp.add_handler(CommandHandler("job", check_job))
     dp.add_handler(CommandHandler("status", status)) # New
+    dp.add_handler(CommandHandler("sb_stop", sb_stop))
+    dp.add_handler(CommandHandler("sb_delete", sb_delete))
     
     # RSS
     dp.add_handler(CommandHandler("add_feed", add_feed))
