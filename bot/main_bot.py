@@ -47,6 +47,17 @@ if rd_client or sb_client:
     monitor = Monitor(downloader, rd_client=rd_client, sb_client=sb_client)
 
 
+# --- Utils ---
+
+def escape_markdown(text: str) -> str:
+    """Escape special characters for Telegram Markdown v1."""
+    # Characters that need escaping in Markdown: _ * [ `
+    # However, since we use backticks for the table part, we mostly care about name
+    chars = ['_', '*', '[', '`']
+    for c in chars:
+        text = text.replace(c, f"\\{c}")
+    return text
+
 # --- Handlers ---
 
 def start(update: Update, context: CallbackContext):
@@ -148,9 +159,10 @@ def rd_downloads(update: Update, context: CallbackContext):
                     b /= 1024.0
                 return f"{b:.0f}TB"
             
-            # Truncate filename
+            # Truncate and escape filename
             if len(filename) > 30:
                 filename = filename[:28] + ".."
+            filename = escape_markdown(filename)
             
             line = f"`{generated:<12} | {fmt_bytes(filesize):<8} |` {filename}"
             lines.append(line)
@@ -196,10 +208,11 @@ def sb_torrents(update: Update, context: CallbackContext):
         
         for i in items:
             name = i.get('name', 'N/A')
-            # Truncate name if too long
+            # Truncate and escape name
             if len(name) > 30:
                 name = name[:28] + ".."
-                
+            name = escape_markdown(name)
+            
             state = i.get('state', 'unknown').title()
             progress = i.get('progress', 0.0)
             

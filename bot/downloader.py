@@ -157,20 +157,27 @@ class Downloader:
         
         logger.info(f"Starting SFTP download from {SEEDBOX_HOST}:{SEEDBOX_SFTP_PORT} {remote_path}")
         
-        transport = paramiko.Transport((SEEDBOX_HOST, SEEDBOX_SFTP_PORT))
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
         try:
-            logger.info(f"DEBUG: Attempting SFTP login with user: {SFTP_USER}")
-            transport.connect(username=SFTP_USER, password=SFTP_PASS)
-            sftp = paramiko.SFTPClient.from_transport(transport)
+            logger.info(f"DEBUG: Attempting SFTP login with user: {SFTP_USER} on {SEEDBOX_HOST}:{SEEDBOX_SFTP_PORT}")
+            # Use high-level connect which is more robust
+            ssh.connect(
+                hostname=SEEDBOX_HOST, 
+                port=SEEDBOX_SFTP_PORT, 
+                username=SFTP_USER, 
+                password=SFTP_PASS,
+                allow_agent=False,
+                look_for_keys=False,
+                timeout=20
+            )
+            sftp = ssh.open_sftp()
             
             # recursive download if directory?
-            # Basic file download for now. Check if remote is dir?
             try:
                 attr = sftp.stat(remote_path)
                 if str(attr).startswith('d'):
-                    # It's a directory. Complexity increased. 
-                    # For now, simplistic: zip handled by packager LOCALLY, but we need to download folder first.
-                    # Or we zip remotely? No, we just download recursively.
                     self._download_sftp_dir(sftp, remote_path, dest_path)
                 else:
                     sftp.get(remote_path, dest_path)
@@ -178,8 +185,11 @@ class Downloader:
                 raise RuntimeError(f"SFTP Error: {e}")
                 
             sftp.close()
+        except Exception as e:
+            logger.error(f"SFTP Connection Error: {e}")
+            raise
         finally:
-            transport.close()
+            ssh.close()
             
         return dest_path
 
