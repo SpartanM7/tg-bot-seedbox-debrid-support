@@ -40,10 +40,30 @@ class Downloader:
         self.updater = telegram_updater
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
         self.storage_queue = get_storage_queue(DOWNLOAD_DIR, min_free_gb=20.0)
+        self._active_tasks = {}
+        self._tasks_lock = threading.Lock()
 
 
     def process_item(self, download_url: str, name: str, dest: str = "telegram", chat_id: Optional[int] = None, size: int = 0):
         """Main entry point: Download -> Pack -> Upload."""
+        task_id = f"{name}_{int(time.time())}"
+        with self._tasks_lock:
+            self._active_tasks[task_id] = {
+                'name': name,
+                'dest': dest,
+                'status': 'enqueued',
+                'size': size,
+                'start_time': time.time()
+            }
+        
+        try:
+            self._process_item_logic(download_url, name, dest, chat_id, size, task_id)
+        finally:
+            with self._tasks_lock:
+                if task_id in self._active_tasks:
+                    del self._active_tasks[task_id]
+
+    def _process_item_logic(self, download_url: str, name: str, dest: str, chat_id: Optional[int], size: int, task_id: str):
         # Check if we should queue
         item = {
             'url': download_url,
@@ -55,10 +75,20 @@ class Downloader:
         
         if self.storage_queue.enqueue(item):
             # Queued due to low space
+            self._update_task_status(task_id, "waiting (low disk)")
             self._notify(chat_id, f"⏸️ Queued: {name} (low disk space, {self.storage_queue.pending_count()} in queue)")
         else:
             # Process immediately
-            _executor.submit(self._worker, download_url, name, dest, chat_id)
+            _executor.submit(self._run_task, download_url, name, dest, chat_id, size, task_id)
+
+    def _update_task_status(self, task_id: str, status: str):
+        with self._tasks_lock:
+            if task_id in self._active_tasks:
+                self._active_tasks[task_id]['status'] = status
+
+    def get_active_tasks(self) -> dict:
+        with self._tasks_lock:
+            return self._active_tasks.copy()
 
     def upload_local_file(self, path: str, dest: str, chat_id: Optional[int] = None):
         """Upload a local file or directory to destination."""
@@ -83,21 +113,20 @@ class Downloader:
             if item.get("zipped") and item.get("zip_path") and os.path.exists(item["zip_path"]):
                 os.remove(item["zip_path"])
             
-    def _worker(self, url: str, name: str, dest: str, chat_id: Optional[int]):
+    def _run_task(self, url: str, name: str, dest: str, chat_id: Optional[int], size: int, task_id: str):
         local_path = os.path.join(DOWNLOAD_DIR, name)
         try:
             # 1. Download
+            self._update_task_status(task_id, "downloading")
             self._notify(chat_id, f"⬇️ Downloading: {name}")
-            local_path = self._download_file(url, local_path)
+            local_path = self._download_file(url, local_path, task_id)
             
-            # 2. Package (Unpack if archive, or Zip if folder?)
-            # If it's a directory, we need to decide what to upload.
+            # 2. Package
+            self._update_task_status(task_id, "packaging")
             items_to_upload = []
             if os.path.isdir(local_path):
-                # Use packager to zip or list files
                 items_to_upload = packager.prepare(local_path, dest=dest)
             else:
-                # Single file
                 items_to_upload = [{"name": name, "path": local_path, "zipped": False}]
 
             # 3. Upload all prepared items
@@ -107,10 +136,13 @@ class Downloader:
                     continue
                 
                 upload_path = item.get("zip_path") or item["path"]
+                status_prefix = f"uploading {item['name']}"
+                self._update_task_status(task_id, status_prefix)
+                
                 if dest == "telegram":
-                    self._upload_telegram(upload_path, chat_id)
+                    self._upload_telegram(upload_path, chat_id, task_id)
                 elif dest == "gdrive":
-                    self._upload_gdrive(upload_path, chat_id)
+                    self._upload_gdrive(upload_path, chat_id, task_id)
             
             # 4. Cleanup items that were created (zips)
             for item in items_to_upload:
@@ -133,10 +165,10 @@ class Downloader:
             logger.error(f"Failed to process {name}: {e}")
             self._notify(chat_id, f"❌ Error processing {name}: {e}")
 
-    def _download_file(self, url: str, dest_path: str) -> str:
+    def _download_file(self, url: str, dest_path: str, task_id: Optional[str] = None) -> str:
         """Download file with progress logging. Supports http(s) and sftp."""
         if url.startswith("sftp://"):
-            return self._download_sftp(url, dest_path)
+            return self._download_sftp(url, dest_path, task_id)
         
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
@@ -145,7 +177,7 @@ class Downloader:
                     f.write(chunk)
         return dest_path
 
-    def _download_sftp(self, url: str, dest_path: str) -> str:
+    def _download_sftp(self, url: str, dest_path: str, task_id: Optional[str] = None) -> str:
         if not paramiko:
             raise RuntimeError("paramiko not installed")
         
@@ -203,7 +235,7 @@ class Downloader:
             else:
                 sftp.get(remote_path, local_path)
 
-    def _upload_telegram(self, path: str, chat_id: int):
+    def _upload_telegram(self, path: str, chat_id: int, task_id: Optional[str] = None):
         """Upload to Telegram, using Telethon for large files."""
         if not self.updater or not chat_id:
             logger.warning("Telegram upload skipped: no updater/chat_id")
@@ -254,7 +286,7 @@ class Downloader:
             self._notify(chat_id, f"❌ Telethon upload failed: {e}")
             logger.error(f"Telethon upload error: {e}")
 
-    def _upload_gdrive(self, path: str, chat_id: int):
+    def _upload_gdrive(self, path: str, chat_id: Optional[int] = None, task_id: Optional[str] = None):
         """Upload to Google Drive via rclone."""
         self._notify(chat_id, f"⬆️ Uploading to GDrive: {os.path.basename(path)}")
         

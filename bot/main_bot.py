@@ -353,6 +353,56 @@ def sb_download(update: Update, context: CallbackContext):
     except Exception as e:
         update.message.reply_text(f"Error: {e}")
 
+def status(update: Update, context: CallbackContext):
+    """Unified status of all active tasks."""
+    import time
+    from bot.jobs import job_status
+    try:
+        lines = ["📡 *System Status*"]
+        
+        # 1. Downloader (Active Transfers)
+        active = downloader.get_active_tasks()
+        if active:
+            lines.append("\n⬇️ *Active Transfers:*")
+            for tid, t in active.items():
+                start_ago = int(time.time() - t['start_time'])
+                lines.append(f"• `{t['name'][:25]}`\n  └ {t['status'].title()} | {start_ago}s ago")
+        
+        # 2. Seedbox (rtorrent)
+        if sb_client:
+            sbt = sb_client.list_torrents()
+            active_sb = [t for t in sbt if t.get('state') in ['downloading', 'hashing']]
+            if active_sb:
+                lines.append("\n📦 *Seedbox:*")
+                for t in active_sb:
+                    lines.append(f"• `{t['name'][:25]}`\n  └ {t['state'].title()} | {t['progress']:.1f}%")
+        
+        # 3. Real-Debrid
+        if rd_client:
+            rdt = rd_client.list_torrents()
+            active_rd = [t for t in rdt if t['status'] not in ['downloaded', 'dead']]
+            if active_rd:
+                lines.append("\n☁️ *Real-Debrid:*")
+                for t in active_rd:
+                    lines.append(f"• `{t['filename'][:25]}`\n  └ {t['status'].replace('_', ' ').title()} | {t['progress']}%")
+        
+        # 4. yt-dlp Queue
+        # Note: job_status is a dict of all jobs. We want active ones.
+        active_jobs = {jid: jinfo for jid, jinfo in job_status.items() if jinfo['status'] in ['queued', 'processing']}
+        if active_jobs:
+            lines.append("\n🎬 *yt-dlp Jobs:*")
+            for jid, jinfo in active_jobs.items():
+                 lines.append(f"• `{jid}`\n  └ {jinfo['status'].title()} | {jinfo['dest'].upper()}")
+
+        if len(lines) == 1:
+            lines.append("\n✅ Everything is idle.")
+            
+        text = "\n".join(lines)
+        update.message.reply_text(text, parse_mode="Markdown")
+        
+    except Exception as e:
+        update.message.reply_text(f"Error getting status: {e}")
+
 # yt-dlp Commands
 
 def ytdl(update: Update, context: CallbackContext):
@@ -499,6 +549,7 @@ def create_app(token: str) -> Updater:
     dp.add_handler(CommandHandler("ytdl", ytdl))
     dp.add_handler(CommandHandler("ytdl_gdrive", ytdl_gdrive))
     dp.add_handler(CommandHandler("job", check_job))
+    dp.add_handler(CommandHandler("status", status)) # New
     
     # RSS
     dp.add_handler(CommandHandler("add_feed", add_feed))
