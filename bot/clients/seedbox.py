@@ -7,6 +7,7 @@ URL should typically end in `/RPC2` if using the SCGI mount provided by standard
 import os
 import xmlrpc.client
 import logging
+import threading
 from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ class SeedboxClient:
     def __init__(self, url: str = None, user: str = None, password: str = None, rpc_url: str = None):
         self.user = user or RUTORRENT_USER
         self.password = password or RUTORRENT_PASS
+        self._lock = threading.Lock()
         
         # Priority: explicit rpc_url -> env SEEDBOX_RPC_URL -> derived from RUTORRENT_URL
         final_rpc_url = rpc_url or SEEDBOX_RPC_URL
@@ -68,18 +70,20 @@ class SeedboxClient:
             self.rpc_url = f"https://{rpc_user}:{self.password}@{final_rpc_url}"
 
         logger.info(f"Initialized Seedbox client at {self.rpc_url.replace(self.password, '********')}")
-        self.server = xmlrpc.client.ServerProxy(self.rpc_url)
+        # Default timeout for XML-RPC calls
+        self.server = xmlrpc.client.ServerProxy(self.rpc_url, context=None)
 
     def _call(self, method: str, *args) -> Any:
-        try:
-            logger.debug(f"Calling XML-RPC: {method} with args {args}")
-            return getattr(self.server, method)(*args)
-        except xmlrpc.client.Fault as e:
-            logger.error(f"rTorrent Fault in {method}: {e.faultString}")
-            raise SeedboxCommunicationError(f"rTorrent Fault: {e.faultString} ({e.faultCode})")
-        except Exception as e:
-            logger.error(f"rTorrent connection error in {method}: {e}")
-            raise SeedboxCommunicationError(f"rTorrent connection error: {e}")
+        with self._lock:
+            try:
+                logger.debug(f"Calling XML-RPC: {method} with args {args}")
+                return getattr(self.server, method)(*args)
+            except xmlrpc.client.Fault as e:
+                logger.error(f"rTorrent Fault in {method}: {e.faultString}")
+                raise SeedboxCommunicationError(f"rTorrent Fault: {e.faultString} ({e.faultCode})")
+            except Exception as e:
+                logger.error(f"rTorrent connection error in {method}: {e}")
+                raise SeedboxCommunicationError(f"rTorrent connection error: {e}")
 
     def add_torrent(self, torrent: str) -> Dict[str, Any]:
         """Add torrent by URL/Magnet."""
