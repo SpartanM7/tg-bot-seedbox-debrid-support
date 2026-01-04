@@ -223,7 +223,7 @@ class Downloader:
             ssh.close()
             
         return dest_path
-走
+
     def _download_sftp_dir(self, sftp, remote_dir, local_dir):
         os.makedirs(local_dir, exist_ok=True)
         for entry in sftp.listdir_attr(remote_dir):

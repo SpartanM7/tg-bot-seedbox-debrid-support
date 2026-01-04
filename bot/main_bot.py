@@ -349,7 +349,7 @@ def rd_download(update: Update, context: CallbackContext):
                 
     except Exception as e:
         update.message.reply_text(f"Error: {e}")
-走
+
 def sb_download(update: Update, context: CallbackContext):
     """Manually trigger download for an existing Seedbox torrent hash."""
     if not _check_sb(update): return
