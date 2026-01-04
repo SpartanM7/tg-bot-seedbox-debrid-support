@@ -194,23 +194,39 @@ class Downloader:
                     del self._active_tasks[task_id]
 
     def _download_file(self, url: str, dest_path: str, task_id: Optional[str] = None) -> str:
-        """Download file with progress logging. Supports http(s) and sftp."""
+        """Download file with progress logging. Supports http(s) and sftp.
+        Includes retry logic for transient HTTP errors."""
         if url.startswith("sftp://"):
             return self._download_sftp(url, dest_path, task_id)
         
-        with requests.get(url, stream=True) as r:
-            r.raise_for_status()
-            total_size = int(r.headers.get('content-length', 0))
-            downloaded = 0
-            with open(dest_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    if task_id and total_size > 0:
-                        downloaded += len(chunk)
-                        # Every ~5MB
-                        if downloaded % (5 * 1024 * 1024) < 16384:
-                            percent = (downloaded / total_size) * 100
-                            self._update_task_status(task_id, f"downloading ({percent:.1f}%)")
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                with requests.get(url, stream=True, timeout=30) as r:
+                    r.raise_for_status()
+                    total_size = int(r.headers.get('content-length', 0))
+                    downloaded = 0
+                    with open(dest_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                if task_id and total_size > 0:
+                                    downloaded += len(chunk)
+                                    # Every ~5MB
+                                    if downloaded % (5 * 1024 * 1024) < 16384:
+                                        percent = (downloaded / total_size) * 100
+                                        self._update_task_status(task_id, f"downloading ({percent:.1f}%)")
+                    return dest_path
+            except (requests.exceptions.HTTPError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                # Retry on 5xx or 429
+                status_code = getattr(e.response, 'status_code', None)
+                if attempt < max_retries - 1 and (status_code in [500, 502, 503, 504, 429] or status_code is None):
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Download attempt {attempt+1} failed ({e}). Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"Download failed after {attempt+1} attempts: {e}")
+                raise
         return dest_path
 
     def _download_sftp(self, url: str, dest_path: str, task_id: Optional[str] = None) -> str:
