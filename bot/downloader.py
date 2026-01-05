@@ -2,7 +2,8 @@
 Downloader module for retrieving files and uploading them.
 
 Handles:
-- Downloading from HTTP links (Real-Debrid / Seedbox)
+- Downloading from HTTP links (Real-Debrid / direct)
+- Downloading from SFTP (Seedbox / rTorrent)
 - Zipping folders (via packager)
 - Uploading to Telegram (split if large)
 - Uploading to Google Drive (rclone)
@@ -15,8 +16,9 @@ import requests
 import shutil
 import logging
 import subprocess
-from typing import Optional
+from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlparse
 
 try:
     import paramiko
@@ -39,7 +41,7 @@ from bot.config import (
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_DIR = "downloads"
-MAX_TG_SIZE = 2 * 1024 * 1024 * 1024 - 1024
+MAX_TG_SIZE = 2 * 1024 * 1024 * 1024 - 1024  # ~2GB
 _executor = ThreadPoolExecutor(max_workers=2)
 _state = get_state()
 
@@ -54,7 +56,7 @@ class Downloader:
         self._tasks_lock = threading.Lock()
 
     # ─────────────────────────────────────────────
-    # STATUS SUPPORT
+    # STATUS
     # ─────────────────────────────────────────────
 
     def get_active_tasks(self) -> dict:
@@ -67,7 +69,7 @@ class Downloader:
                 self._active_tasks[task_id]["status"] = status
 
     # ─────────────────────────────────────────────
-    # ENTRY POINT
+    # ENTRY
     # ─────────────────────────────────────────────
 
     def process_item(self, download_url, name, dest="telegram",
@@ -95,7 +97,15 @@ class Downloader:
             self._update_task_status(task_id, "waiting (low disk)")
             self._notify(chat_id, f"⏸️ Queued: {name}")
         else:
-            _executor.submit(self._run_task, download_url, name, dest, chat_id, size, task_id)
+            _executor.submit(
+                self._run_task,
+                download_url,
+                name,
+                dest,
+                chat_id,
+                size,
+                task_id,
+            )
 
     # ─────────────────────────────────────────────
     # CORE WORKER
@@ -119,6 +129,7 @@ class Downloader:
 
             for item in items:
                 if item.get("skipped"):
+                    self._notify(chat_id, f"⚠️ Skipped {item['name']}: {item['reason']}")
                     continue
 
                 upload_path = item.get("zip_path") or item["path"]
@@ -142,7 +153,92 @@ class Downloader:
                 self._active_tasks.pop(task_id, None)
 
     # ─────────────────────────────────────────────
-    # TELEGRAM UPLOAD (WITH PROGRESS)
+    # DOWNLOAD (HTTP + SFTP)
+    # ─────────────────────────────────────────────
+
+    def _download_file(self, url, dest, task_id):
+        parsed = urlparse(url)
+
+        if parsed.scheme == "sftp":
+            return self._download_sftp(parsed.path, dest, task_id)
+
+        return self._download_http(url, dest, task_id)
+
+    def _download_http(self, url, dest, task_id):
+        with requests.get(url, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("content-length", 0))
+            downloaded = 0
+
+            with open(dest, "wb") as f:
+                for chunk in r.iter_content(8192):
+                    if chunk:
+                        f.write(chunk)
+                        if total:
+                            downloaded += len(chunk)
+                            if downloaded % (5 * 1024 * 1024) < 8192:
+                                percent = (downloaded / total) * 100
+                                self._update_task_status(
+                                    task_id, f"downloading ({percent:.1f}%)"
+                                )
+        return dest
+
+    def _download_sftp(self, remote_path, dest, task_id):
+        if not paramiko:
+            raise RuntimeError("paramiko not installed")
+
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        ssh.connect(
+            hostname=SEEDBOX_HOST,
+            port=SEEDBOX_SFTP_PORT,
+            username=SFTP_USER,
+            password=SFTP_PASS,
+            allow_agent=False,
+            look_for_keys=False,
+            timeout=30,
+        )
+
+        sftp = ssh.open_sftp()
+
+        try:
+            attr = sftp.stat(remote_path)
+
+            if str(attr).startswith("d"):
+                self._download_sftp_dir(sftp, remote_path, dest, task_id)
+            else:
+                size = attr.st_size
+
+                def cb(sent, total):
+                    if total and sent % (10 * 1024 * 1024) < 8192:
+                        percent = (sent / total) * 100
+                        self._update_task_status(
+                            task_id, f"downloading (SFTP {percent:.1f}%)"
+                        )
+
+                sftp.get(remote_path, dest, callback=cb)
+
+        finally:
+            sftp.close()
+            ssh.close()
+
+        return dest
+
+    def _download_sftp_dir(self, sftp, remote_dir, local_dir, task_id):
+        os.makedirs(local_dir, exist_ok=True)
+
+        for entry in sftp.listdir_attr(remote_dir):
+            rpath = f"{remote_dir}/{entry.filename}"
+            lpath = os.path.join(local_dir, entry.filename)
+
+            if str(entry).startswith("d"):
+                self._download_sftp_dir(sftp, rpath, lpath, task_id)
+            else:
+                sftp.get(rpath, lpath)
+
+    # ─────────────────────────────────────────────
+    # TELEGRAM UPLOAD
     # ─────────────────────────────────────────────
 
     def _upload_telegram(self, path, chat_id, task_id):
@@ -162,7 +258,7 @@ class Downloader:
         size = os.path.getsize(path)
         thumb = None
 
-        if os.path.splitext(path)[1].lower() in (".mp4", ".mkv", ".avi"):
+        if os.path.splitext(path)[1].lower() in (".mp4", ".mkv", ".avi", ".mov", ".m4v"):
             thumb = generate_thumbnail(path)
 
         if size > 50 * 1024 * 1024:
@@ -186,10 +282,9 @@ class Downloader:
         loop = get_telegram_loop()
 
         def progress(current, total):
-            if total > 0:
+            if total and int((current / total) * 100) % 5 == 0:
                 percent = (current / total) * 100
-                if int(percent) % 5 == 0:
-                    self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
+                self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
 
         future = asyncio.run_coroutine_threadsafe(
             uploader.upload_file(
@@ -200,29 +295,7 @@ class Downloader:
             ),
             loop,
         )
-
         future.result()
-
-    # ─────────────────────────────────────────────
-    # DOWNLOAD WITH PROGRESS
-    # ─────────────────────────────────────────────
-
-    def _download_file(self, url, dest, task_id):
-        with requests.get(url, stream=True, timeout=30) as r:
-            r.raise_for_status()
-            total = int(r.headers.get("content-length", 0))
-            downloaded = 0
-
-            with open(dest, "wb") as f:
-                for chunk in r.iter_content(8192):
-                    if chunk:
-                        f.write(chunk)
-                        if total:
-                            downloaded += len(chunk)
-                            if downloaded % (5 * 1024 * 1024) < 8192:
-                                percent = (downloaded / total) * 100
-                                self._update_task_status(task_id, f"downloading ({percent:.1f}%)")
-        return dest
 
     # ─────────────────────────────────────────────
     # GOOGLE DRIVE
