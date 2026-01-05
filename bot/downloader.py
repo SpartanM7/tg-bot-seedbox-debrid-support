@@ -167,20 +167,32 @@ class Downloader:
     def _download_http(self, url, dest, task_id):
         with requests.get(url, stream=True, timeout=30) as r:
             r.raise_for_status()
-            total = int(r.headers.get("content-length", 0))
+
+            total = r.headers.get("content-length")
+            total = int(total) if total and total.isdigit() else None
             downloaded = 0
 
             with open(dest, "wb") as f:
                 for chunk in r.iter_content(8192):
-                    if chunk:
-                        f.write(chunk)
+                    if not chunk:
+                        continue
+
+                    f.write(chunk)
+                    downloaded += len(chunk)
+
+                    # update every ~5MB
+                    if downloaded % (5 * 1024 * 1024) < 8192:
                         if total:
-                            downloaded += len(chunk)
-                            if downloaded % (5 * 1024 * 1024) < 8192:
-                                percent = (downloaded / total) * 100
-                                self._update_task_status(
-                                    task_id, f"downloading ({percent:.1f}%)"
-                                )
+                            percent = (downloaded / total) * 100
+                            self._update_task_status(
+                                task_id, f"downloading ({percent:.1f}%)"
+                            )
+                        else:
+                            mb = downloaded / (1024 * 1024)
+                            self._update_task_status(
+                                task_id, f"downloading ({mb:.1f} MB)"
+                            )
+
         return dest
 
     def _download_sftp(self, remote_path, dest, task_id):
@@ -228,7 +240,16 @@ class Downloader:
     def _download_sftp_dir(self, sftp, remote_dir, local_dir, task_id):
         os.makedirs(local_dir, exist_ok=True)
 
-        for entry in sftp.listdir_attr(remote_dir):
+        entries = sftp.listdir_attr(remote_dir)
+        total_files = len(entries)
+        current = 0
+
+        for entry in entries:
+            current += 1
+            self._update_task_status(
+                task_id, f"downloading (SFTP {current}/{total_files} files)"
+            )
+
             rpath = f"{remote_dir}/{entry.filename}"
             lpath = os.path.join(local_dir, entry.filename)
 
@@ -248,7 +269,9 @@ class Downloader:
             from bot.utils.splitter import split_file
             parts = split_file(path)
             for i, part in enumerate(parts):
-                self._update_task_status(task_id, f"uploading part {i+1}/{len(parts)} (0%)")
+                self._update_task_status(
+                    task_id, f"uploading part {i+1}/{len(parts)} (0%)"
+                )
                 self._upload_telegram_real(part, chat_id, task_id)
                 os.remove(part)
         else:
