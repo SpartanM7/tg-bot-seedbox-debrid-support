@@ -16,6 +16,7 @@ import requests
 import shutil
 import logging
 import subprocess
+import stat
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
@@ -41,7 +42,7 @@ from bot.config import (
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_DIR = "downloads"
-MAX_TG_SIZE = 2 * 1024 * 1024 * 1024 - 1024  # ~2GB
+MAX_TG_SIZE = 2 * 1024 * 1024 * 1024 - 1024
 _executor = ThreadPoolExecutor(max_workers=2)
 _state = get_state()
 
@@ -180,7 +181,6 @@ class Downloader:
                     f.write(chunk)
                     downloaded += len(chunk)
 
-                    # update every ~5MB
                     if downloaded % (5 * 1024 * 1024) < 8192:
                         if total:
                             percent = (downloaded / total) * 100
@@ -217,11 +217,9 @@ class Downloader:
         try:
             attr = sftp.stat(remote_path)
 
-            if str(attr).startswith("d"):
+            if stat.S_ISDIR(attr.st_mode):
                 self._download_sftp_dir(sftp, remote_path, dest, task_id)
             else:
-                size = attr.st_size
-
                 def cb(sent, total):
                     if total and sent % (10 * 1024 * 1024) < 8192:
                         percent = (sent / total) * 100
@@ -241,21 +239,23 @@ class Downloader:
         os.makedirs(local_dir, exist_ok=True)
 
         entries = sftp.listdir_attr(remote_dir)
-        total_files = len(entries)
+
+        files = [e for e in entries if not stat.S_ISDIR(e.st_mode)]
+        total_files = len(files)
         current = 0
 
         for entry in entries:
-            current += 1
-            self._update_task_status(
-                task_id, f"downloading (SFTP {current}/{total_files} files)"
-            )
-
             rpath = f"{remote_dir}/{entry.filename}"
             lpath = os.path.join(local_dir, entry.filename)
 
-            if str(entry).startswith("d"):
+            if stat.S_ISDIR(entry.st_mode):
+                os.makedirs(lpath, exist_ok=True)
                 self._download_sftp_dir(sftp, rpath, lpath, task_id)
             else:
+                current += 1
+                self._update_task_status(
+                    task_id, f"downloading (SFTP {current}/{total_files} files)"
+                )
                 sftp.get(rpath, lpath)
 
     # ─────────────────────────────────────────────
