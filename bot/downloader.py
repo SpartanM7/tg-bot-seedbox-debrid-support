@@ -134,6 +134,16 @@ class Downloader:
                     continue
 
                 upload_path = item.get("zip_path") or item["path"]
+
+                # ✅ CRITICAL FIX: never upload directories
+                if os.path.isdir(upload_path):
+                    logger.warning("Skipping directory upload: %s", upload_path)
+                    self._notify(
+                        chat_id,
+                        f"⚠️ Skipped folder `{item['name']}` (directory upload not supported)"
+                    )
+                    continue
+
                 self._update_task_status(task_id, f"uploading {item['name']} (0%)")
 
                 if dest == "telegram":
