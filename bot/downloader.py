@@ -7,6 +7,7 @@ Handles:
 - Recursive upload of all files (no directory uploads)
 - Uploading to Telegram (split if large)
 - Uploading to Google Drive (rclone)
+- Upload resume & deduplication via state hash tracking
 """
 
 import os
@@ -17,6 +18,7 @@ import shutil
 import logging
 import subprocess
 import stat
+import hashlib
 from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
@@ -47,7 +49,7 @@ _state = get_state()
 
 
 # ─────────────────────────────────────────────
-# HELPER: RECURSIVE FILE ENUMERATION
+# HELPERS
 # ─────────────────────────────────────────────
 
 def collect_files(root: str) -> List[str]:
@@ -60,6 +62,18 @@ def collect_files(root: str) -> List[str]:
                 files.append(full)
     return files
 
+
+def compute_sha1(path: str) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ─────────────────────────────────────────────
+# DOWNLOADER
+# ─────────────────────────────────────────────
 
 class Downloader:
     def __init__(self, telegram_updater=None):
@@ -135,27 +149,40 @@ class Downloader:
 
             local_path = self._download_file(url, base_path, task_id)
 
-            # ───── Collect ALL files recursively
-            if os.path.isdir(local_path):
-                files = collect_files(local_path)
-            else:
-                files = [local_path]
-
+            files = collect_files(local_path) if os.path.isdir(local_path) else [local_path]
             total = len(files)
             if total == 0:
-                raise RuntimeError("No files found to upload")
+                raise RuntimeError("No files found")
 
-            # ───── Upload sequentially
             for idx, file_path in enumerate(files, start=1):
                 rel = os.path.relpath(file_path, local_path)
-                self._update_task_status(
-                    task_id, f"uploading {idx}/{total}"
-                )
+                self._update_task_status(task_id, f"uploading {idx}/{total}")
+
+                file_hash = compute_sha1(file_path)
+                file_size = os.path.getsize(file_path)
+
+                # ───── Resume / Deduplication
+                if _state.is_uploaded(file_hash, dest):
+                    logger.info("Skipping already uploaded file: %s", rel)
+                    os.remove(file_path)
+                    continue
 
                 if dest == "telegram":
                     self._upload_telegram(file_path, chat_id, task_id, rel)
                 else:
                     self._upload_gdrive(file_path, chat_id)
+
+                # ───── Mark uploaded & cleanup
+                _state.mark_uploaded(
+                    file_hash,
+                    dest,
+                    {
+                        "name": os.path.basename(file_path),
+                        "size": file_size,
+                    },
+                )
+
+                os.remove(file_path)
 
             self._update_task_status(task_id, "completed")
             self._notify(chat_id, f"✅ **Completed Transfer**\n\n📁 `{name}`")
@@ -170,45 +197,22 @@ class Downloader:
                 self._active_tasks.pop(task_id, None)
 
     # ─────────────────────────────────────────────
-    # DOWNLOAD (HTTP + SFTP)
+    # DOWNLOAD
     # ─────────────────────────────────────────────
 
     def _download_file(self, url, dest, task_id):
         parsed = urlparse(url)
-
         if parsed.scheme == "sftp":
             return self._download_sftp(parsed.path, dest, task_id)
-
         return self._download_http(url, dest, task_id)
 
     def _download_http(self, url, dest, task_id):
         with requests.get(url, stream=True, timeout=30) as r:
             r.raise_for_status()
-
-            total = r.headers.get("content-length")
-            total = int(total) if total and total.isdigit() else None
-            downloaded = 0
-
             with open(dest, "wb") as f:
                 for chunk in r.iter_content(8192):
-                    if not chunk:
-                        continue
-
-                    f.write(chunk)
-                    downloaded += len(chunk)
-
-                    if downloaded % (5 * 1024 * 1024) < 8192:
-                        if total:
-                            percent = (downloaded / total) * 100
-                            self._update_task_status(
-                                task_id, f"downloading ({percent:.1f}%)"
-                            )
-                        else:
-                            mb = downloaded / (1024 * 1024)
-                            self._update_task_status(
-                                task_id, f"downloading ({mb:.1f} MB)"
-                            )
-
+                    if chunk:
+                        f.write(chunk)
         return dest
 
     def _download_sftp(self, remote_path, dest, task_id):
@@ -224,54 +228,37 @@ class Downloader:
             password=SFTP_PASS,
             allow_agent=False,
             look_for_keys=False,
-            timeout=30,
         )
 
         sftp = ssh.open_sftp()
-
         try:
             attr = sftp.stat(remote_path)
-
             if stat.S_ISDIR(attr.st_mode):
                 self._download_sftp_dir(sftp, remote_path, dest, task_id)
             else:
                 sftp.get(remote_path, dest)
-
         finally:
             sftp.close()
             ssh.close()
-
         return dest
 
     def _download_sftp_dir(self, sftp, remote_dir, local_dir, task_id):
         os.makedirs(local_dir, exist_ok=True)
-
-        entries = sftp.listdir_attr(remote_dir)
-        files = [e for e in entries if not stat.S_ISDIR(e.st_mode)]
-        total = len(files)
-        done = 0
-
-        for entry in entries:
+        for entry in sftp.listdir_attr(remote_dir):
             rpath = f"{remote_dir}/{entry.filename}"
             lpath = os.path.join(local_dir, entry.filename)
-
             if stat.S_ISDIR(entry.st_mode):
                 self._download_sftp_dir(sftp, rpath, lpath, task_id)
             else:
-                done += 1
-                self._update_task_status(
-                    task_id, f"downloading (SFTP {done}/{total} files)"
-                )
                 sftp.get(rpath, lpath)
 
     # ─────────────────────────────────────────────
-    # TELEGRAM UPLOAD (FILES ONLY)
+    # TELEGRAM UPLOAD
     # ─────────────────────────────────────────────
 
     def _upload_telegram(self, path, chat_id, task_id, rel_path):
-        size = os.path.getsize(path)
-
         caption = f"`{rel_path}`"
+        size = os.path.getsize(path)
 
         if size > MAX_TG_SIZE:
             from bot.utils.splitter import split_file
@@ -310,9 +297,10 @@ class Downloader:
         loop = get_telegram_loop()
 
         def progress(current, total):
-            if total and int((current / total) * 100) % 5 == 0:
+            if total:
                 percent = (current / total) * 100
-                self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
+                if int(percent) % 5 == 0:
+                    self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
 
         future = asyncio.run_coroutine_threadsafe(
             uploader.upload_file(
