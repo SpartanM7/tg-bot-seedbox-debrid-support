@@ -18,7 +18,7 @@ import logging
 import subprocess
 import stat
 import hashlib
-from typing import Optional, List
+from typing import List
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
@@ -90,7 +90,6 @@ class Downloader:
         self.updater = telegram_updater
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
         self.storage_queue = get_storage_queue(DOWNLOAD_DIR, min_free_gb=20.0)
-
         self._active_tasks = {}
         self._tasks_lock = threading.Lock()
 
@@ -111,9 +110,7 @@ class Downloader:
     # ENTRY
     # ─────────────────────────────────────────────
 
-    def process_item(self, download_url, name, dest="telegram",
-                     chat_id=None, size=0):
-
+    def process_item(self, download_url, name, dest="telegram", chat_id=None, size=0):
         task_id = f"{name}_{int(time.time())}"
         with self._tasks_lock:
             self._active_tasks[task_id] = {
@@ -160,13 +157,12 @@ class Downloader:
             local_path = self._download_file(url, base_path, task_id)
 
             files = collect_files(local_path) if os.path.isdir(local_path) else [local_path]
-            total = len(files)
-            if total == 0:
+            if not files:
                 raise RuntimeError("No files found")
 
             for idx, file_path in enumerate(files, start=1):
                 rel = os.path.relpath(file_path, local_path)
-                self._update_task_status(task_id, f"uploading {idx}/{total}")
+                self._update_task_status(task_id, f"uploading {idx}/{len(files)}")
 
                 file_hash = compute_sha1(file_path)
                 file_size = os.path.getsize(file_path)
@@ -178,7 +174,7 @@ class Downloader:
                 if dest == "telegram":
                     self._upload_telegram(file_path, chat_id, task_id, rel)
                 else:
-                    self._upload_gdrive(file_path, chat_id)
+                    self._upload_gdrive(file_path)
 
                 _state.mark_uploaded(
                     file_hash,
@@ -227,14 +223,10 @@ class Downloader:
                     if downloaded % (5 * 1024 * 1024) < 8192:
                         if total:
                             percent = (downloaded / total) * 100
-                            self._update_task_status(
-                                task_id, f"downloading ({percent:.1f}%)"
-                            )
+                            self._update_task_status(task_id, f"downloading ({percent:.1f}%)")
                         else:
                             mb = downloaded / (1024 * 1024)
-                            self._update_task_status(
-                                task_id, f"downloading ({mb:.1f} MB)"
-                            )
+                            self._update_task_status(task_id, f"downloading ({mb:.1f} MB)")
         return dest
 
     def _download_sftp(self, remote_path, dest, task_id):
@@ -282,7 +274,74 @@ class Downloader:
     # ─────────────────────────────────────────────
     # TELEGRAM UPLOAD
     # ─────────────────────────────────────────────
-    # (UNCHANGED — already correct)
+
+    def _upload_telegram(self, path, chat_id, task_id, rel_path):
+        caption = f"`{rel_path}`"
+        size = os.path.getsize(path)
+
+        if size > MAX_TG_SIZE:
+            from bot.utils.splitter import split_file
+            parts = split_file(path)
+            for part in parts:
+                self._upload_telegram_real(part, chat_id, task_id, caption)
+                os.remove(part)
+        else:
+            self._upload_telegram_real(path, chat_id, task_id, caption)
+
+    def _upload_telegram_real(self, path, chat_id, task_id, caption):
+        size = os.path.getsize(path)
+        thumb = None
+
+        if os.path.splitext(path)[1].lower() in (".mp4", ".mkv", ".avi", ".mov", ".m4v"):
+            thumb = generate_thumbnail(path)
+
+        if size > 50 * 1024 * 1024:
+            self._upload_telegram_large(path, chat_id, task_id, thumb, caption)
+        else:
+            self.updater.bot.send_document(
+                chat_id=TG_UPLOAD_TARGET or chat_id,
+                document=open(path, "rb"),
+                caption=caption,
+            )
+
+        if thumb and os.path.exists(thumb):
+            os.remove(thumb)
+
+    def _upload_telegram_large(self, path, chat_id, task_id, thumb_path, caption):
+        from bot.telethon_uploader import get_telethon_uploader
+        from bot.telegram_loop import get_telegram_loop
+        import asyncio
+
+        uploader = get_telethon_uploader()
+        loop = get_telegram_loop()
+
+        def progress(current, total):
+            if total:
+                percent = (current / total) * 100
+                if int(percent) % 5 == 0:
+                    self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
+
+        future = asyncio.run_coroutine_threadsafe(
+            uploader.upload_file(
+                path,
+                chat_id,
+                caption=caption,
+                thumb_path=thumb_path,
+                progress_callback=progress,
+            ),
+            loop,
+        )
+        future.result()
+
+    # ─────────────────────────────────────────────
+    # GOOGLE DRIVE
+    # ─────────────────────────────────────────────
+
+    def _upload_gdrive(self, path):
+        subprocess.run(["rclone", "copy", path, DRIVE_DEST], check=False)
+
+    # ─────────────────────────────────────────────
+    # NOTIFY
     # ─────────────────────────────────────────────
 
     def _notify(self, chat_id, text):
