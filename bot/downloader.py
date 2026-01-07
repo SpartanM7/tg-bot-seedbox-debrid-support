@@ -4,7 +4,7 @@ Downloader module for retrieving files and uploading them.
 Handles:
 - Downloading from HTTP links (Real-Debrid / direct)
 - Downloading from SFTP (Seedbox / rTorrent)
-- Zipping folders (via packager)
+- Recursive upload of all files (no directory uploads)
 - Uploading to Telegram (split if large)
 - Uploading to Google Drive (rclone)
 """
@@ -17,7 +17,7 @@ import shutil
 import logging
 import subprocess
 import stat
-from typing import List, Optional
+from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
@@ -26,7 +26,6 @@ try:
 except ImportError:
     paramiko = None
 
-from bot.utils import packager
 from bot.utils.thumbnailer import generate_thumbnail
 from bot.state import get_state
 from bot.storage_queue import get_storage_queue
@@ -45,6 +44,21 @@ DOWNLOAD_DIR = "downloads"
 MAX_TG_SIZE = 2 * 1024 * 1024 * 1024 - 1024
 _executor = ThreadPoolExecutor(max_workers=2)
 _state = get_state()
+
+
+# ─────────────────────────────────────────────
+# HELPER: RECURSIVE FILE ENUMERATION
+# ─────────────────────────────────────────────
+
+def collect_files(root: str) -> List[str]:
+    files = []
+    for base, _, filenames in os.walk(root):
+        filenames.sort()
+        for f in filenames:
+            full = os.path.join(base, f)
+            if os.path.isfile(full):
+                files.append(full)
+    return files
 
 
 class Downloader:
@@ -113,43 +127,35 @@ class Downloader:
     # ─────────────────────────────────────────────
 
     def _run_task(self, url, name, dest, chat_id, size, task_id):
-        local_path = os.path.join(DOWNLOAD_DIR, name)
+        base_path = os.path.join(DOWNLOAD_DIR, name)
 
         try:
             self._update_task_status(task_id, "downloading (0%)")
             self._notify(chat_id, f"⬇️ Downloading: {name}")
 
-            local_path = self._download_file(url, local_path, task_id)
+            local_path = self._download_file(url, base_path, task_id)
 
-            self._update_task_status(task_id, "packaging")
-
+            # ───── Collect ALL files recursively
             if os.path.isdir(local_path):
-                items = packager.prepare(local_path, dest=dest)
+                files = collect_files(local_path)
             else:
-                items = [{"name": name, "path": local_path, "zipped": False}]
+                files = [local_path]
 
-            for item in items:
-                if item.get("skipped"):
-                    self._notify(chat_id, f"⚠️ Skipped {item['name']}: {item['reason']}")
-                    continue
+            total = len(files)
+            if total == 0:
+                raise RuntimeError("No files found to upload")
 
-                upload_path = item.get("zip_path") or item["path"]
-
-                # ✅ CRITICAL FIX: never upload directories
-                if os.path.isdir(upload_path):
-                    logger.warning("Skipping directory upload: %s", upload_path)
-                    self._notify(
-                        chat_id,
-                        f"⚠️ Skipped folder `{item['name']}` (directory upload not supported)"
-                    )
-                    continue
-
-                self._update_task_status(task_id, f"uploading {item['name']} (0%)")
+            # ───── Upload sequentially
+            for idx, file_path in enumerate(files, start=1):
+                rel = os.path.relpath(file_path, local_path)
+                self._update_task_status(
+                    task_id, f"uploading {idx}/{total}"
+                )
 
                 if dest == "telegram":
-                    self._upload_telegram(upload_path, chat_id, task_id)
+                    self._upload_telegram(file_path, chat_id, task_id, rel)
                 else:
-                    self._upload_gdrive(upload_path, chat_id)
+                    self._upload_gdrive(file_path, chat_id)
 
             self._update_task_status(task_id, "completed")
             self._notify(chat_id, f"✅ **Completed Transfer**\n\n📁 `{name}`")
@@ -211,7 +217,6 @@ class Downloader:
 
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
         ssh.connect(
             hostname=SEEDBOX_HOST,
             port=SEEDBOX_SFTP_PORT,
@@ -230,14 +235,7 @@ class Downloader:
             if stat.S_ISDIR(attr.st_mode):
                 self._download_sftp_dir(sftp, remote_path, dest, task_id)
             else:
-                def cb(sent, total):
-                    if total and sent % (10 * 1024 * 1024) < 8192:
-                        percent = (sent / total) * 100
-                        self._update_task_status(
-                            task_id, f"downloading (SFTP {percent:.1f}%)"
-                        )
-
-                sftp.get(remote_path, dest, callback=cb)
+                sftp.get(remote_path, dest)
 
         finally:
             sftp.close()
@@ -249,45 +247,42 @@ class Downloader:
         os.makedirs(local_dir, exist_ok=True)
 
         entries = sftp.listdir_attr(remote_dir)
-
         files = [e for e in entries if not stat.S_ISDIR(e.st_mode)]
-        total_files = len(files)
-        current = 0
+        total = len(files)
+        done = 0
 
         for entry in entries:
             rpath = f"{remote_dir}/{entry.filename}"
             lpath = os.path.join(local_dir, entry.filename)
 
             if stat.S_ISDIR(entry.st_mode):
-                os.makedirs(lpath, exist_ok=True)
                 self._download_sftp_dir(sftp, rpath, lpath, task_id)
             else:
-                current += 1
+                done += 1
                 self._update_task_status(
-                    task_id, f"downloading (SFTP {current}/{total_files} files)"
+                    task_id, f"downloading (SFTP {done}/{total} files)"
                 )
                 sftp.get(rpath, lpath)
 
     # ─────────────────────────────────────────────
-    # TELEGRAM UPLOAD
+    # TELEGRAM UPLOAD (FILES ONLY)
     # ─────────────────────────────────────────────
 
-    def _upload_telegram(self, path, chat_id, task_id):
+    def _upload_telegram(self, path, chat_id, task_id, rel_path):
         size = os.path.getsize(path)
+
+        caption = f"`{rel_path}`"
 
         if size > MAX_TG_SIZE:
             from bot.utils.splitter import split_file
             parts = split_file(path)
-            for i, part in enumerate(parts):
-                self._update_task_status(
-                    task_id, f"uploading part {i+1}/{len(parts)} (0%)"
-                )
-                self._upload_telegram_real(part, chat_id, task_id)
+            for part in parts:
+                self._upload_telegram_real(part, chat_id, task_id, caption)
                 os.remove(part)
         else:
-            self._upload_telegram_real(path, chat_id, task_id)
+            self._upload_telegram_real(path, chat_id, task_id, caption)
 
-    def _upload_telegram_real(self, path, chat_id, task_id):
+    def _upload_telegram_real(self, path, chat_id, task_id, caption):
         size = os.path.getsize(path)
         thumb = None
 
@@ -295,18 +290,18 @@ class Downloader:
             thumb = generate_thumbnail(path)
 
         if size > 50 * 1024 * 1024:
-            self._upload_telegram_large(path, chat_id, task_id, thumb)
+            self._upload_telegram_large(path, chat_id, task_id, thumb, caption)
         else:
             self.updater.bot.send_document(
                 chat_id=TG_UPLOAD_TARGET or chat_id,
                 document=open(path, "rb"),
-                caption=os.path.basename(path),
+                caption=caption,
             )
 
         if thumb and os.path.exists(thumb):
             os.remove(thumb)
 
-    def _upload_telegram_large(self, path, chat_id, task_id, thumb_path):
+    def _upload_telegram_large(self, path, chat_id, task_id, thumb_path, caption):
         from bot.telethon_uploader import get_telethon_uploader
         from bot.telegram_loop import get_telegram_loop
         import asyncio
@@ -323,6 +318,7 @@ class Downloader:
             uploader.upload_file(
                 path,
                 chat_id,
+                caption=caption,
                 thumb_path=thumb_path,
                 progress_callback=progress,
             ),
