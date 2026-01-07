@@ -1,5 +1,5 @@
 """
-Telethon-based uploader for large Telegram files (up to 2GB+ via splitting).
+Telethon-based uploader for large Telegram files.
 
 Uses Telegram MTProto (user API) via Telethon.
 Designed to be safe for long-running uploads on Heroku.
@@ -19,24 +19,22 @@ from bot.config import (
     TELEGRAM_API_HASH,
     TELEGRAM_SESSION,
     TG_UPLOAD_TARGET,
-    BOT_TOKEN,            # <-- IMPORTANT: this already exists in your project
+    BOT_TOKEN,
 )
 
 logger = logging.getLogger(__name__)
 
+VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm")
+
 # ─────────────────────────────────────────────
-# GLOBAL SINGLETON TELETHON CLIENT (PROCESS-WIDE)
+# GLOBAL SINGLETON TELETHON CLIENT
 # ─────────────────────────────────────────────
 
 _client: Optional[TelegramClient] = None
-_client_lock = asyncio.Lock()   # ASYNC lock (never threading.Lock)
+_client_lock = asyncio.Lock()
 
 
 async def _get_client() -> TelegramClient:
-    """
-    Create exactly ONE Telethon client per worker process.
-    This client is reused for ALL uploads.
-    """
     global _client
 
     async with _client_lock:
@@ -47,9 +45,7 @@ async def _get_client() -> TelegramClient:
             raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set")
 
         if not TELEGRAM_SESSION:
-            raise RuntimeError(
-                "TELEGRAM_SESSION must be set (string session required for Heroku)"
-            )
+            raise RuntimeError("TELEGRAM_SESSION must be set")
 
         logger.info("Initializing singleton Telethon client")
 
@@ -59,26 +55,20 @@ async def _get_client() -> TelegramClient:
             session=session,
             api_id=int(TELEGRAM_API_ID),
             api_hash=TELEGRAM_API_HASH,
-            receive_updates=False,  # CRITICAL: disables update polling
+            receive_updates=False,
         )
 
-        # Start client as BOT (correct + explicit)
         await _client.start(bot_token=BOT_TOKEN)
 
-        logger.info("Telethon client started successfully (singleton)")
+        logger.info("Telethon client started successfully")
         return _client
 
 
 # ─────────────────────────────────────────────
-# UPLOADER CLASS
+# UPLOADER
 # ─────────────────────────────────────────────
 
 class TelethonUploader:
-    """
-    Stateless uploader that uses the shared Telethon client.
-    Safe for split uploads and long-running tasks.
-    """
-
     async def upload_file(
         self,
         file_path: str,
@@ -87,18 +77,14 @@ class TelethonUploader:
         thumb_path: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ):
-        """
-        Upload a single file using Telethon.
-
-        This function can be called sequentially for split parts.
-        """
-
         client = await _get_client()
 
         file_name = os.path.basename(file_path)
         file_size = os.path.getsize(file_path)
+        ext = os.path.splitext(file_name)[1].lower()
 
-        # Override chat_id if TG_UPLOAD_TARGET is set
+        is_video = ext in VIDEO_EXTS
+
         target = TG_UPLOAD_TARGET or chat_id
         try:
             target = int(target)
@@ -106,10 +92,11 @@ class TelethonUploader:
             pass
 
         logger.info(
-            "Uploading %s (%d bytes) to Telegram target %s",
+            "Uploading %s (%d bytes) to Telegram target %s | video=%s",
             file_name,
             file_size,
             target,
+            is_video,
         )
 
         await client.send_file(
@@ -119,13 +106,12 @@ class TelethonUploader:
             thumb=thumb_path,
             attributes=[DocumentAttributeFilename(file_name)],
             progress_callback=progress_callback,
-            force_document=True,
-            supports_streaming=False,
+            force_document=not is_video,
+            supports_streaming=is_video,
         )
 
         logger.info("Successfully uploaded %s", file_name)
 
-        # Give event loop breathing room between large uploads
         await asyncio.sleep(1)
 
 
@@ -136,10 +122,7 @@ class TelethonUploader:
 _uploader: Optional[TelethonUploader] = None
 
 
-def get_telethon_uploader() -> Optional[TelethonUploader]:
-    """
-    Returns a singleton TelethonUploader instance.
-    """
+def get_telethon_uploader() -> TelethonUploader:
     global _uploader
     if _uploader is None:
         _uploader = TelethonUploader()
