@@ -32,7 +32,7 @@ from bot.config import (
     DRIVE_DEST,
 )
 from bot.state import get_state
-from bot.splitter import split_file
+from bot.utils.splitter import split_file
 from bot.telethon_uploader import telethon_upload_file
 
 logger = logging.getLogger(__name__)
