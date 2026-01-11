@@ -6,7 +6,6 @@ Handles:
 - Downloading from SFTP (Seedbox / rTorrent)
 - Recursive upload of all files (no directory uploads)
 - Uploading to Telegram (split if large)
-- Uploading to Google Drive (rclone)
 - Upload resume & deduplication via state hash tracking
 - File count tracking for status display
 """
@@ -16,7 +15,6 @@ import time
 import threading
 import requests
 import logging
-import subprocess
 import stat
 import hashlib
 from typing import List, Optional, Dict, Any
@@ -36,12 +34,10 @@ from bot.config import (
 from bot.state import get_state
 from bot.splitter import split_file
 from bot.telethon_uploader import telethon_upload_file
-from bot.packager import create_7z_archive
 
 logger = logging.getLogger(__name__)
 
 MAX_TG_SIZE = int(os.getenv("MAX_TG_SIZE", str(2 * 1024 * 1024 * 1024)))  # 2GB default
-MAX_ZIP_SIZE = int(os.getenv("MAX_ZIP_SIZE_BYTES", str(100 * 1024 * 1024)))  # 100MB default
 
 
 def count_sftp_files(sftp, path):
@@ -62,9 +58,13 @@ def count_sftp_files(sftp, path):
 def hash_file(filepath: str) -> str:
     """Compute SHA256 hash of a file."""
     h = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        while chunk := f.read(8192):
-            h.update(chunk)
+    try:
+        with open(filepath, "rb") as f:
+            while chunk := f.read(8192):
+                h.update(chunk)
+    except Exception as e:
+        logger.error(f"Error hashing file {filepath}: {e}")
+        return ""
     return h.hexdigest()
 
 
@@ -152,25 +152,29 @@ class Downloader:
         """Download file from HTTP URL with progress tracking."""
         self._update_task_status(task_id, "downloading")
 
-        r = requests.get(url, stream=True, timeout=30)
-        r.raise_for_status()
+        try:
+            r = requests.get(url, stream=True, timeout=30)
+            r.raise_for_status()
 
-        total_size = int(r.headers.get("content-length", expected_size))
-        downloaded = 0
+            total_size = int(r.headers.get("content-length", expected_size))
+            downloaded = 0
 
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
+            with open(dest, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
 
-                    # Update progress every 1MB
-                    if total_size > 0 and downloaded % (1024 * 1024) == 0:
-                        progress = (downloaded / total_size) * 100
-                        self._update_task_status(task_id, "downloading", progress=progress)
+                        # Update progress every 1MB
+                        if total_size > 0 and downloaded % (1024 * 1024) == 0:
+                            progress = (downloaded / total_size) * 100
+                            self._update_task_status(task_id, "downloading", progress=progress)
 
-        logger.info(f"Downloaded {dest} ({downloaded} bytes)")
-        return dest
+            logger.info(f"Downloaded {dest} ({downloaded} bytes)")
+            return dest
+        except Exception as e:
+            logger.error(f"HTTP download failed: {e}")
+            raise
 
     def _download_sftp(self, remote_path, dest, task_id):
         """Download file or directory from SFTP."""
@@ -179,28 +183,32 @@ class Downloader:
 
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(
-            hostname=SEEDBOX_HOST,
-            port=SEEDBOX_SFTP_PORT,
-            username=SFTP_USER,
-            password=SFTP_PASS,
-            allow_agent=False,
-            look_for_keys=False,
-        )
 
-        sftp = ssh.open_sftp()
         try:
-            attr = sftp.stat(remote_path)
-            if stat.S_ISDIR(attr.st_mode):
-                total = count_sftp_files(sftp, remote_path)
-                self._update_task_status(task_id, "downloading", total_files=total, uploaded_files=0)
-                self._download_sftp_dir(sftp, remote_path, dest, task_id, total, [0])
-            else:
-                self._update_task_status(task_id, "downloading", total_files=1)
-                sftp.get(remote_path, dest)
-                self._update_task_status(task_id, "downloading", uploaded_files=1)
+            ssh.connect(
+                hostname=SEEDBOX_HOST,
+                port=SEEDBOX_SFTP_PORT,
+                username=SFTP_USER,
+                password=SFTP_PASS,
+                allow_agent=False,
+                look_for_keys=False,
+                timeout=10,
+            )
+
+            sftp = ssh.open_sftp()
+            try:
+                attr = sftp.stat(remote_path)
+                if stat.S_ISDIR(attr.st_mode):
+                    total = count_sftp_files(sftp, remote_path)
+                    self._update_task_status(task_id, "downloading", total_files=total, uploaded_files=0)
+                    self._download_sftp_dir(sftp, remote_path, dest, task_id, total, [0])
+                else:
+                    self._update_task_status(task_id, "downloading", total_files=1)
+                    sftp.get(remote_path, dest)
+                    self._update_task_status(task_id, "downloading", uploaded_files=1)
+            finally:
+                sftp.close()
         finally:
-            sftp.close()
             ssh.close()
         return dest
 
@@ -208,23 +216,27 @@ class Downloader:
         """Recursively download directory from SFTP with file counting."""
         os.makedirs(local_path, exist_ok=True)
 
-        for entry in sftp.listdir_attr(remote_path):
-            remote_file = f"{remote_path}/{entry.filename}"
-            local_file = os.path.join(local_path, entry.filename)
+        try:
+            for entry in sftp.listdir_attr(remote_path):
+                remote_file = f"{remote_path}/{entry.filename}"
+                local_file = os.path.join(local_path, entry.filename)
 
-            if stat.S_ISDIR(entry.st_mode):
-                self._download_sftp_dir(sftp, remote_file, local_file, task_id, total, counter)
-            else:
-                sftp.get(remote_file, local_file)
-                counter[0] += 1
-                # Update status with file count
-                self._update_task_status(
-                    task_id, 
-                    f"Downloading (Sftp {counter[0]}/{total} Files)",
-                    uploaded_files=counter[0],
-                    total_files=total
-                )
-                logger.debug(f"Downloaded {remote_file} -> {local_file} ({counter[0]}/{total})")
+                if stat.S_ISDIR(entry.st_mode):
+                    self._download_sftp_dir(sftp, remote_file, local_file, task_id, total, counter)
+                else:
+                    sftp.get(remote_file, local_file)
+                    counter[0] += 1
+                    # Update status with file count
+                    self._update_task_status(
+                        task_id, 
+                        f"Downloading (Sftp {counter[0]}/{total} Files)",
+                        uploaded_files=counter[0],
+                        total_files=total
+                    )
+                    logger.debug(f"Downloaded {remote_file} -> {local_file} ({counter[0]}/{total})")
+        except Exception as e:
+            logger.error(f"SFTP directory download failed: {e}")
+            raise
 
     def _upload(self, local_path, name, dest, chat_id, task_id):
         """Upload file or folder to destination."""
@@ -241,13 +253,14 @@ class Downloader:
 
             for idx, fpath in enumerate(files, 1):
                 fhash = hash_file(fpath)
-                if state.is_uploaded(fhash, dest):
+                if fhash and state.is_uploaded(fhash, dest):
                     logger.info(f"Skipping already uploaded: {fpath}")
                     self._update_task_status(task_id, "uploading", uploaded_files=idx)
                     continue
 
                 self._upload_single_file(fpath, dest, chat_id, task_id)
-                state.mark_uploaded(fhash, dest, {"name": os.path.basename(fpath)})
+                if fhash:
+                    state.mark_uploaded(fhash, dest, {"name": os.path.basename(fpath)})
 
                 # Update file progress
                 self._update_task_status(task_id, "uploading", uploaded_files=idx)
@@ -255,9 +268,10 @@ class Downloader:
             # Single file
             self._update_task_status(task_id, "uploading", total_files=1, uploaded_files=0)
             fhash = hash_file(local_path)
-            if not state.is_uploaded(fhash, dest):
+            if not fhash or not state.is_uploaded(fhash, dest):
                 self._upload_single_file(local_path, dest, chat_id, task_id)
-                state.mark_uploaded(fhash, dest, {"name": name})
+                if fhash:
+                    state.mark_uploaded(fhash, dest, {"name": name})
             self._update_task_status(task_id, "uploading", uploaded_files=1)
 
     def _upload_single_file(self, filepath, dest, chat_id, task_id):
@@ -276,11 +290,16 @@ class Downloader:
     def _upload_to_gdrive(self, filepath, task_id):
         """Upload file to Google Drive using rclone."""
         self._update_task_status(task_id, "uploading to gdrive")
-        cmd = ["rclone", "copy", filepath, DRIVE_DEST, "-P"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"rclone failed: {result.stderr}")
-        logger.info(f"Uploaded to GDrive: {filepath}")
+        try:
+            import subprocess
+            cmd = ["rclone", "copy", filepath, DRIVE_DEST, "-P"]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"rclone failed: {result.stderr}")
+            logger.info(f"Uploaded to GDrive: {filepath}")
+        except Exception as e:
+            logger.error(f"GDrive upload failed: {e}")
+            raise
 
     def _upload_to_telegram(self, filepath, chat_id, task_id):
         """Upload file to Telegram with splitting if needed."""
@@ -288,23 +307,37 @@ class Downloader:
             logger.warning("No chat_id provided for Telegram upload")
             return
 
-        fsize = os.path.getsize(filepath)
+        try:
+            fsize = os.path.getsize(filepath)
 
-        if fsize <= MAX_TG_SIZE:
-            # Direct upload
-            self._update_task_status(task_id, "uploading to telegram")
-            telethon_upload_file(filepath, chat_id)
-        else:
-            # Split and upload
-            self._update_task_status(task_id, "splitting file")
-            parts = split_file(filepath, MAX_TG_SIZE)
+            if fsize <= MAX_TG_SIZE:
+                # Direct upload (under 2GB)
+                self._update_task_status(task_id, "uploading to telegram")
+                telethon_upload_file(filepath, chat_id)
+            else:
+                # Split and upload (over 2GB)
+                self._update_task_status(task_id, "splitting file")
+                parts = split_file(filepath)
 
-            total_parts = len(parts)
-            self._update_task_status(task_id, "uploading to telegram", total_files=total_parts, uploaded_files=0)
+                total_parts = len(parts)
+                self._update_task_status(task_id, "uploading to telegram", total_files=total_parts, uploaded_files=0)
 
-            for idx, part in enumerate(parts, 1):
-                telethon_upload_file(part, chat_id)
-                self._update_task_status(task_id, "uploading to telegram", uploaded_files=idx)
-                os.remove(part)
+                for idx, part in enumerate(parts, 1):
+                    try:
+                        telethon_upload_file(part, chat_id)
+                        self._update_task_status(task_id, "uploading to telegram", uploaded_files=idx)
+                        logger.info(f"Uploaded part {idx}/{total_parts}")
+                    except Exception as e:
+                        logger.error(f"Failed to upload part {idx}: {e}")
+                        raise
+                    finally:
+                        # Clean up part file
+                        try:
+                            os.remove(part)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete part file {part}: {e}")
 
-        logger.info(f"Uploaded to Telegram: {filepath}")
+            logger.info(f"Uploaded to Telegram: {filepath}")
+        except Exception as e:
+            logger.error(f"Telegram upload failed: {e}")
+            raise
