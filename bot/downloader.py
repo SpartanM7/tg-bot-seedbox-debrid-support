@@ -8,6 +8,7 @@ Handles:
 - Uploading to Telegram (split if large)
 - Uploading to Google Drive (rclone)
 - Upload resume & deduplication via state hash tracking
+- File count tracking for status display
 """
 
 import os
@@ -18,218 +19,162 @@ import logging
 import subprocess
 import stat
 import hashlib
-from typing import List
-from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
+from typing import List, Optional, Dict, Any
 
 try:
     import paramiko
 except ImportError:
     paramiko = None
 
-from bot.utils.thumbnailer import generate_thumbnail
-from bot.state import get_state
-from bot.storage_queue import get_storage_queue
 from bot.config import (
     SEEDBOX_HOST,
     SEEDBOX_SFTP_PORT,
-    DRIVE_DEST,
     SFTP_USER,
     SFTP_PASS,
-    TG_UPLOAD_TARGET,
+    DRIVE_DEST,
+    MAX_ZIP_SIZE_BYTES,
 )
+from bot.state import get_state
+from bot.splitter import split_file
+from bot.telethon_uploader import telethon_upload_file
+from bot.packager import create_7z_archive
 
 logger = logging.getLogger(__name__)
 
-DOWNLOAD_DIR = "downloads"
-MAX_TG_SIZE = 2 * 1024 * 1024 * 1024 - 1024
-_executor = ThreadPoolExecutor(max_workers=2)
-_state = get_state()
+MAX_TG_SIZE = int(os.getenv("MAX_TG_SIZE", str(2 * 1024 * 1024 * 1024)))  # 2GB default
+MAX_ZIP_SIZE = int(MAX_ZIP_SIZE_BYTES or 100 * 1024 * 1024)  # 100MB default
 
 
-# ─────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────
+def count_sftp_files(sftp, path):
+    """Recursively count files in SFTP directory."""
+    count = 0
+    try:
+        for entry in sftp.listdir_attr(path):
+            full_path = f"{path}/{entry.filename}"
+            if stat.S_ISDIR(entry.st_mode):
+                count += count_sftp_files(sftp, full_path)
+            else:
+                count += 1
+    except Exception as e:
+        logger.error(f"Error counting SFTP files in {path}: {e}")
+    return count
 
-def collect_files(root: str) -> List[str]:
-    files = []
-    for base, _, filenames in os.walk(root):
-        filenames.sort()
-        for f in filenames:
-            full = os.path.join(base, f)
-            if os.path.isfile(full):
-                files.append(full)
-    return files
 
-
-def compute_sha1(path: str) -> str:
-    h = hashlib.sha1()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+def hash_file(filepath: str) -> str:
+    """Compute SHA256 hash of a file."""
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        while chunk := f.read(8192):
             h.update(chunk)
     return h.hexdigest()
 
 
-def count_sftp_files(sftp, remote_dir) -> int:
-    count = 0
-    for entry in sftp.listdir_attr(remote_dir):
-        rpath = f"{remote_dir}/{entry.filename}"
-        if stat.S_ISDIR(entry.st_mode):
-            count += count_sftp_files(sftp, rpath)
-        else:
-            count += 1
-    return count
-
-
-# ─────────────────────────────────────────────
-# DOWNLOADER
-# ─────────────────────────────────────────────
-
 class Downloader:
+    """Handles downloading and uploading of files."""
+
     def __init__(self, telegram_updater=None):
         self.updater = telegram_updater
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-        self.storage_queue = get_storage_queue(DOWNLOAD_DIR, min_free_gb=20.0)
+        self._lock = threading.Lock()
         self._active_tasks = {}
-        self._tasks_lock = threading.Lock()
-
-    # ─────────────────────────────────────────────
-    # STATUS
-    # ─────────────────────────────────────────────
 
     def get_active_tasks(self) -> dict:
-        with self._tasks_lock:
+        """Return a copy of active tasks for status display."""
+        with self._lock:
             return self._active_tasks.copy()
 
-    def _update_task_status(self, task_id: str, status: str):
-        with self._tasks_lock:
+    def _update_task_status(self, task_id, status, progress=None, uploaded_files=None, total_files=None):
+        """Update task status with optional progress and file count."""
+        with self._lock:
             if task_id in self._active_tasks:
                 self._active_tasks[task_id]["status"] = status
+                if progress is not None:
+                    self._active_tasks[task_id]["progress_percent"] = progress
+                if uploaded_files is not None:
+                    self._active_tasks[task_id]["uploaded_files"] = uploaded_files
+                if total_files is not None:
+                    self._active_tasks[task_id]["total_files"] = total_files
 
-    # ─────────────────────────────────────────────
-    # ENTRY
-    # ─────────────────────────────────────────────
-
-    def process_item(self, download_url, name, dest="telegram", chat_id=None, size=0):
-        task_id = f"{name}_{int(time.time())}"
-        with self._tasks_lock:
+    def _register_task(self, task_id, name, status="starting"):
+        """Register a new active task."""
+        with self._lock:
             self._active_tasks[task_id] = {
                 "name": name,
-                "dest": dest,
-                "status": "enqueued",
-                "size": size,
+                "status": status,
                 "start_time": time.time(),
+                "total_files": 0,
+                "uploaded_files": 0,
+                "progress_percent": 0.0,
             }
 
-        item = {
-            "url": download_url,
-            "name": name,
-            "dest": dest,
-            "chat_id": chat_id,
-            "size": size,
-        }
+    def _unregister_task(self, task_id):
+        """Remove task from active list."""
+        with self._lock:
+            self._active_tasks.pop(task_id, None)
 
-        if self.storage_queue.enqueue(item):
-            self._update_task_status(task_id, "waiting (low disk)")
-            self._notify(chat_id, f"⏸️ Queued: {name}")
-        else:
-            _executor.submit(
-                self._run_task,
-                download_url,
-                name,
-                dest,
-                chat_id,
-                size,
-                task_id,
-            )
+    def process_item(self, url, name, dest="telegram", chat_id=None, size=0):
+        """Main entry point: download and upload a file or folder."""
+        task_id = f"{int(time.time())}_{name[:20]}"
+        self._register_task(task_id, name, "queued")
 
-    # ─────────────────────────────────────────────
-    # CORE WORKER
-    # ─────────────────────────────────────────────
+        t = threading.Thread(
+            target=self._process_item_worker,
+            args=(task_id, url, name, dest, chat_id, size),
+            daemon=True,
+        )
+        t.start()
 
-    def _run_task(self, url, name, dest, chat_id, size, task_id):
-        base_path = os.path.join(DOWNLOAD_DIR, name)
-
+    def _process_item_worker(self, task_id, url, name, dest, chat_id, size):
+        """Background worker for processing items."""
         try:
-            self._update_task_status(task_id, "downloading (0%)")
-            self._notify(chat_id, f"⬇️ Downloading: {name}")
+            self._update_task_status(task_id, "downloading")
 
-            local_path = self._download_file(url, base_path, task_id)
+            if url.startswith("sftp://"):
+                remote_path = url[7:]
+                local_path = f"/tmp/{name}"
+                self._download_sftp(remote_path, local_path, task_id)
+            else:
+                local_path = f"/tmp/{name}"
+                self._download_http(url, local_path, task_id, size)
 
-            files = collect_files(local_path) if os.path.isdir(local_path) else [local_path]
-            if not files:
-                raise RuntimeError("No files found")
+            # Upload
+            self._update_task_status(task_id, "uploading")
+            self._upload(local_path, name, dest, chat_id, task_id)
 
-            for idx, file_path in enumerate(files, start=1):
-                rel = os.path.relpath(file_path, local_path)
-                self._update_task_status(task_id, f"uploading {idx}/{len(files)}")
-
-                file_hash = compute_sha1(file_path)
-                file_size = os.path.getsize(file_path)
-
-                if _state.is_uploaded(file_hash, dest):
-                    os.remove(file_path)
-                    continue
-
-                if dest == "telegram":
-                    self._upload_telegram(file_path, chat_id, task_id, rel)
-                else:
-                    self._upload_gdrive(file_path)
-
-                _state.mark_uploaded(
-                    file_hash,
-                    dest,
-                    {"name": os.path.basename(file_path), "size": file_size},
-                )
-
-                os.remove(file_path)
-
-            self._update_task_status(task_id, "completed")
-            self._notify(chat_id, f"✅ **Completed Transfer**\n\n📁 `{name}`")
+            logger.info(f"✅ Completed: {name}")
 
         except Exception as e:
-            logger.exception("Task failed")
-            self._update_task_status(task_id, "error")
-            self._notify(chat_id, f"❌ Error: {e}")
-
+            logger.error(f"❌ Error processing {name}: {e}")
+            self._update_task_status(task_id, f"error: {e}")
         finally:
-            with self._tasks_lock:
-                self._active_tasks.pop(task_id, None)
+            time.sleep(5)
+            self._unregister_task(task_id)
 
-    # ─────────────────────────────────────────────
-    # DOWNLOAD
-    # ─────────────────────────────────────────────
+    def _download_http(self, url, dest, task_id, expected_size=0):
+        """Download file from HTTP URL with progress tracking."""
+        self._update_task_status(task_id, "downloading")
 
-    def _download_file(self, url, dest, task_id):
-        parsed = urlparse(url)
-        if parsed.scheme == "sftp":
-            return self._download_sftp(parsed.path, dest, task_id)
-        return self._download_http(url, dest, task_id)
+        r = requests.get(url, stream=True, timeout=30)
+        r.raise_for_status()
 
-    def _download_http(self, url, dest, task_id):
-        with requests.get(url, stream=True, timeout=30) as r:
-            r.raise_for_status()
-            total = r.headers.get("content-length")
-            total = int(total) if total and total.isdigit() else None
-            downloaded = 0
+        total_size = int(r.headers.get("content-length", expected_size))
+        downloaded = 0
 
-            with open(dest, "wb") as f:
-                for chunk in r.iter_content(8192):
-                    if not chunk:
-                        continue
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
 
-                    if downloaded % (5 * 1024 * 1024) < 8192:
-                        if total:
-                            percent = (downloaded / total) * 100
-                            self._update_task_status(task_id, f"downloading ({percent:.1f}%)")
-                        else:
-                            mb = downloaded / (1024 * 1024)
-                            self._update_task_status(task_id, f"downloading ({mb:.1f} MB)")
+                    # Update progress every 1MB
+                    if total_size > 0 and downloaded % (1024 * 1024) == 0:
+                        progress = (downloaded / total_size) * 100
+                        self._update_task_status(task_id, "downloading", progress=progress)
+
+        logger.info(f"Downloaded {dest} ({downloaded} bytes)")
         return dest
 
     def _download_sftp(self, remote_path, dest, task_id):
+        """Download file or directory from SFTP."""
         if not paramiko:
             raise RuntimeError("paramiko not installed")
 
@@ -249,104 +194,118 @@ class Downloader:
             attr = sftp.stat(remote_path)
             if stat.S_ISDIR(attr.st_mode):
                 total = count_sftp_files(sftp, remote_path)
+                self._update_task_status(task_id, "downloading", total_files=total, uploaded_files=0)
                 self._download_sftp_dir(sftp, remote_path, dest, task_id, total, [0])
             else:
+                self._update_task_status(task_id, "downloading", total_files=1)
                 sftp.get(remote_path, dest)
+                self._update_task_status(task_id, "downloading", uploaded_files=1)
         finally:
             sftp.close()
             ssh.close()
         return dest
 
-    def _download_sftp_dir(self, sftp, remote_dir, local_dir, task_id, total, done_ref):
-        os.makedirs(local_dir, exist_ok=True)
-        for entry in sftp.listdir_attr(remote_dir):
-            rpath = f"{remote_dir}/{entry.filename}"
-            lpath = os.path.join(local_dir, entry.filename)
+    def _download_sftp_dir(self, sftp, remote_path, local_path, task_id, total, counter):
+        """Recursively download directory from SFTP with file counting."""
+        os.makedirs(local_path, exist_ok=True)
+
+        for entry in sftp.listdir_attr(remote_path):
+            remote_file = f"{remote_path}/{entry.filename}"
+            local_file = os.path.join(local_path, entry.filename)
+
             if stat.S_ISDIR(entry.st_mode):
-                self._download_sftp_dir(sftp, rpath, lpath, task_id, total, done_ref)
+                self._download_sftp_dir(sftp, remote_file, local_file, task_id, total, counter)
             else:
-                done_ref[0] += 1
+                sftp.get(remote_file, local_file)
+                counter[0] += 1
+                # Update status with file count
                 self._update_task_status(
-                    task_id, f"downloading (SFTP {done_ref[0]}/{total} files)"
+                    task_id, 
+                    f"Downloading (Sftp {counter[0]}/{total} Files)",
+                    uploaded_files=counter[0],
+                    total_files=total
                 )
-                sftp.get(rpath, lpath)
+                logger.debug(f"Downloaded {remote_file} -> {local_file} ({counter[0]}/{total})")
 
-    # ─────────────────────────────────────────────
-    # TELEGRAM UPLOAD
-    # ─────────────────────────────────────────────
+    def _upload(self, local_path, name, dest, chat_id, task_id):
+        """Upload file or folder to destination."""
+        state = get_state()
 
-    def _upload_telegram(self, path, chat_id, task_id, rel_path):
-        caption = f"`{rel_path}`"
-        size = os.path.getsize(path)
+        if os.path.isdir(local_path):
+            files = []
+            for root, dirs, filenames in os.walk(local_path):
+                for fn in filenames:
+                    files.append(os.path.join(root, fn))
 
-        if size > MAX_TG_SIZE:
-            from bot.utils.splitter import split_file
-            parts = split_file(path)
-            for part in parts:
-                self._upload_telegram_real(part, chat_id, task_id, caption)
+            total_files = len(files)
+            self._update_task_status(task_id, "uploading", total_files=total_files, uploaded_files=0)
+
+            for idx, fpath in enumerate(files, 1):
+                fhash = hash_file(fpath)
+                if state.is_uploaded(fhash, dest):
+                    logger.info(f"Skipping already uploaded: {fpath}")
+                    self._update_task_status(task_id, "uploading", uploaded_files=idx)
+                    continue
+
+                self._upload_single_file(fpath, dest, chat_id, task_id)
+                state.mark_uploaded(fhash, dest, {"name": os.path.basename(fpath)})
+
+                # Update file progress
+                self._update_task_status(task_id, "uploading", uploaded_files=idx)
+        else:
+            # Single file
+            self._update_task_status(task_id, "uploading", total_files=1, uploaded_files=0)
+            fhash = hash_file(local_path)
+            if not state.is_uploaded(fhash, dest):
+                self._upload_single_file(local_path, dest, chat_id, task_id)
+                state.mark_uploaded(fhash, dest, {"name": name})
+            self._update_task_status(task_id, "uploading", uploaded_files=1)
+
+    def _upload_single_file(self, filepath, dest, chat_id, task_id):
+        """Upload a single file to the specified destination."""
+        fname = os.path.basename(filepath)
+        fsize = os.path.getsize(filepath)
+
+        if dest == "gdrive":
+            self._upload_to_gdrive(filepath, task_id)
+        elif dest == "telegram":
+            self._upload_to_telegram(filepath, chat_id, task_id)
+        else:
+            logger.warning(f"Unknown dest '{dest}', defaulting to telegram")
+            self._upload_to_telegram(filepath, chat_id, task_id)
+
+    def _upload_to_gdrive(self, filepath, task_id):
+        """Upload file to Google Drive using rclone."""
+        self._update_task_status(task_id, "uploading to gdrive")
+        cmd = ["rclone", "copy", filepath, DRIVE_DEST, "-P"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"rclone failed: {result.stderr}")
+        logger.info(f"Uploaded to GDrive: {filepath}")
+
+    def _upload_to_telegram(self, filepath, chat_id, task_id):
+        """Upload file to Telegram with splitting if needed."""
+        if not chat_id:
+            logger.warning("No chat_id provided for Telegram upload")
+            return
+
+        fsize = os.path.getsize(filepath)
+
+        if fsize <= MAX_TG_SIZE:
+            # Direct upload
+            self._update_task_status(task_id, "uploading to telegram")
+            telethon_upload_file(filepath, chat_id)
+        else:
+            # Split and upload
+            self._update_task_status(task_id, "splitting file")
+            parts = split_file(filepath, MAX_TG_SIZE)
+
+            total_parts = len(parts)
+            self._update_task_status(task_id, "uploading to telegram", total_files=total_parts, uploaded_files=0)
+
+            for idx, part in enumerate(parts, 1):
+                telethon_upload_file(part, chat_id)
+                self._update_task_status(task_id, "uploading to telegram", uploaded_files=idx)
                 os.remove(part)
-        else:
-            self._upload_telegram_real(path, chat_id, task_id, caption)
 
-    def _upload_telegram_real(self, path, chat_id, task_id, caption):
-        size = os.path.getsize(path)
-        thumb = None
-
-        if os.path.splitext(path)[1].lower() in (".mp4", ".mkv", ".avi", ".mov", ".m4v"):
-            thumb = generate_thumbnail(path)
-
-        if size > 50 * 1024 * 1024:
-            self._upload_telegram_large(path, chat_id, task_id, thumb, caption)
-        else:
-            self.updater.bot.send_document(
-                chat_id=TG_UPLOAD_TARGET or chat_id,
-                document=open(path, "rb"),
-                caption=caption,
-            )
-
-        if thumb and os.path.exists(thumb):
-            os.remove(thumb)
-
-    def _upload_telegram_large(self, path, chat_id, task_id, thumb_path, caption):
-        from bot.telethon_uploader import get_telethon_uploader
-        from bot.telegram_loop import get_telegram_loop
-        import asyncio
-
-        uploader = get_telethon_uploader()
-        loop = get_telegram_loop()
-
-        def progress(current, total):
-            if total:
-                percent = (current / total) * 100
-                if int(percent) % 5 == 0:
-                    self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
-
-        future = asyncio.run_coroutine_threadsafe(
-            uploader.upload_file(
-                path,
-                chat_id,
-                caption=caption,
-                thumb_path=thumb_path,
-                progress_callback=progress,
-            ),
-            loop,
-        )
-        future.result()
-
-    # ─────────────────────────────────────────────
-    # GOOGLE DRIVE
-    # ─────────────────────────────────────────────
-
-    def _upload_gdrive(self, path):
-        subprocess.run(["rclone", "copy", path, DRIVE_DEST], check=False)
-
-    # ─────────────────────────────────────────────
-    # NOTIFY
-    # ─────────────────────────────────────────────
-
-    def _notify(self, chat_id, text):
-        if self.updater and chat_id:
-            try:
-                self.updater.bot.send_message(chat_id=chat_id, text=text)
-            except Exception:
-                logger.error("Failed to send notification")
+        logger.info(f"Uploaded to Telegram: {filepath}")
