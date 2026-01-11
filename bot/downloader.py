@@ -32,7 +32,6 @@ from bot.config import (
     SFTP_USER,
     SFTP_PASS,
     DRIVE_DEST,
-    MAX_ZIP_SIZE_BYTES,
 )
 from bot.state import get_state
 from bot.splitter import split_file
@@ -42,7 +41,7 @@ from bot.packager import create_7z_archive
 logger = logging.getLogger(__name__)
 
 MAX_TG_SIZE = int(os.getenv("MAX_TG_SIZE", str(2 * 1024 * 1024 * 1024)))  # 2GB default
-MAX_ZIP_SIZE = int(MAX_ZIP_SIZE_BYTES or 100 * 1024 * 1024)  # 100MB default
+MAX_ZIP_SIZE = int(os.getenv("MAX_ZIP_SIZE_BYTES", str(100 * 1024 * 1024)))  # 100MB default
 
 
 def count_sftp_files(sftp, path):
