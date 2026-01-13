@@ -30,7 +30,7 @@ class RSSManager:
         self.sb_client = sb_client
         self.state_manager = state_manager
         self.upload_dest = upload_dest
-        self.api_delay = api_delay  # Delay between API calls
+        self.api_delay = api_delay
         self.default_chat_id = default_chat_id
         self.delete_after_upload = delete_after_upload
 
@@ -45,15 +45,7 @@ class RSSManager:
         private_torrent: bool = False,
         delete_after_upload: Optional[bool] = None
     ):
-        """
-        Add RSS feed
-
-        Args:
-            url: RSS feed URL
-            service: 'rd' or 'sb' or None (auto-detect based on cache)
-            private_torrent: Whether feed contains private torrents
-            delete_after_upload: Delete from seedbox after upload (overrides global setting)
-        """
+        """Add RSS feed"""
         # Check if feed already exists
         for feed in self.feeds:
             if feed["url"] == url:
@@ -67,8 +59,8 @@ class RSSManager:
             "url": url,
             "service": service,
             "private": private_torrent,
-            "last_check": None,  # Track last poll time
-            "seen_guids": [],  # Track seen items to avoid re-processing
+            "last_check": None,
+            "seen_guids": [],
             "delete_after_upload": delete_after_upload
         }
 
@@ -88,12 +80,7 @@ class RSSManager:
         return self.feeds.copy()
 
     async def poll_feeds(self) -> int:
-        """
-        Poll all RSS feeds and add new torrents
-
-        Returns:
-            Number of new items found
-        """
+        """Poll all RSS feeds and add new torrents"""
         total_new = 0
 
         for feed in self.feeds:
@@ -114,12 +101,7 @@ class RSSManager:
         return total_new
 
     async def _poll_feed(self, feed: Dict) -> int:
-        """
-        Poll single RSS feed
-
-        Returns:
-            Number of new items added
-        """
+        """Poll single RSS feed"""
         url = feed["url"]
         logger.info(f"Polling RSS feed: {url}")
 
@@ -235,19 +217,7 @@ class RSSManager:
         return None
 
     async def _add_rss_torrent(self, torrent_url: str, title: str, feed: Dict) -> bool:
-        """
-        Add torrent from RSS with intelligent service selection
-
-        Strategy:
-        1. If service is forced (rd/sb), use that
-        2. If public torrent: Check RD cache first
-        3. If cached in RD -> use RD
-        4. If not cached -> use Seedbox
-        5. If private torrent -> always use Seedbox
-
-        Returns:
-            True if successfully added
-        """
+        """Add torrent from RSS with intelligent service selection"""
         service = feed.get("service")
         private = feed.get("private", False)
         delete_after_upload = feed.get("delete_after_upload", self.delete_after_upload)
@@ -291,10 +261,10 @@ class RSSManager:
                 self.state_manager.add_torrent(
                     torrent_id=str(torrent_id),
                     service="rd",
-                    user_id=0,  # RSS user
+                    user_id=0,
                     upload_intent=self.upload_dest,
                     chat_id=self.default_chat_id,
-                    delete_after_upload=False  # RD doesn't need deletion
+                    delete_after_upload=False
                 )
 
             elif selected_service == "sb":
@@ -319,10 +289,10 @@ class RSSManager:
                 self.state_manager.add_torrent(
                     torrent_id=torrent_hash,
                     service="sb",
-                    user_id=0,  # RSS user
+                    user_id=0,
                     upload_intent=self.upload_dest,
                     chat_id=self.default_chat_id,
-                    delete_after_upload=delete_after_upload  # Per-feed config
+                    delete_after_upload=delete_after_upload
                 )
 
             return True
@@ -332,12 +302,7 @@ class RSSManager:
             return False
 
     async def _select_service_by_cache(self, torrent_url: str) -> str:
-        """
-        Select service based on Real-Debrid cache availability
-
-        Returns:
-            'rd' if cached in Real-Debrid, 'sb' otherwise
-        """
+        """Select service based on Real-Debrid cache availability"""
         try:
             # Check if RD client is available
             if not self.rd_client:

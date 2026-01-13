@@ -39,9 +39,9 @@ except ImportError:
     ContextTypes = type('ContextTypes', (), {'DEFAULT_TYPE': CallbackContext})
     filters = Filters
 
-# Import bot modules
-from bot.real_debrid import RealDebridClient
-from bot.seedbox import SeedboxClient
+# Import bot modules - FIXED PATHS
+from bot.clients.realdebrid import RealDebridClient
+from bot.clients.seedbox import SeedboxClient
 from bot.monitor import TorrentMonitor
 from bot.downloader import download_and_upload
 from bot.state import StateManager
