@@ -2,23 +2,42 @@
 """
 Unified Telegram bot for managing torrents via Real-Debrid and Seedbox.
 Handles RSS feeds with smart polling and caching.
+Compatible with python-telegram-bot v13+
 """
 
 import os
 import sys
-import time
 import logging
 import asyncio
 from datetime import datetime, timezone
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-    ContextTypes,
-)
+
+# Try v20+ imports first, fall back to v13
+try:
+    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.ext import (
+        Application,
+        CommandHandler,
+        MessageHandler,
+        CallbackQueryHandler,
+        filters,
+        ContextTypes,
+    )
+    PTB_VERSION = 20
+except ImportError:
+    # Fall back to v13
+    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.ext import (
+        Updater,
+        CommandHandler,
+        MessageHandler,
+        CallbackQueryHandler,
+        Filters,
+        CallbackContext,
+    )
+    PTB_VERSION = 13
+    # Aliases for compatibility
+    ContextTypes = type('ContextTypes', (), {'DEFAULT_TYPE': CallbackContext})
+    filters = Filters
 
 # Import bot modules
 from bot.real_debrid import RealDebridClient
@@ -46,7 +65,7 @@ SB_USER = os.getenv("SB_USER")
 SB_PASS = os.getenv("SB_PASS")
 SB_PORT = int(os.getenv("SB_PORT", "22"))
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
-TG_UPLOAD_TARGET = os.getenv("TG_UPLOAD_TARGET")  # Default Telegram chat ID
+TG_UPLOAD_TARGET = os.getenv("TG_UPLOAD_TARGET")
 
 # Initialize clients
 rd_client = RealDebridClient(RD_API_KEY) if RD_API_KEY else None
@@ -55,9 +74,9 @@ state_manager = StateManager()
 status_manager = StatusMessageManager()
 
 # RSS Configuration
-RSS_POLL_INTERVAL = int(os.getenv("RSS_POLL_INTERVAL", "900"))  # 15 minutes
-RSS_UPLOAD_DEST = os.getenv("RSS_UPLOAD_DEST", "gdrive")  # gdrive or telegram
-RSS_API_DELAY = float(os.getenv("RSS_API_DELAY", "2.0"))  # 2 second delay between API calls
+RSS_POLL_INTERVAL = int(os.getenv("RSS_POLL_INTERVAL", "900"))
+RSS_UPLOAD_DEST = os.getenv("RSS_UPLOAD_DEST", "gdrive")
+RSS_API_DELAY = float(os.getenv("RSS_API_DELAY", "2.0"))
 RSS_DELETE_AFTER_UPLOAD = os.getenv("RSS_DELETE_AFTER_UPLOAD", "false").lower() == "true"
 
 rss_manager = RSSManager(
@@ -66,7 +85,7 @@ rss_manager = RSSManager(
     state_manager=state_manager,
     upload_dest=RSS_UPLOAD_DEST,
     api_delay=RSS_API_DELAY,
-    default_chat_id=TG_UPLOAD_TARGET,  # Pass default chat ID
+    default_chat_id=TG_UPLOAD_TARGET,
     delete_after_upload=RSS_DELETE_AFTER_UPLOAD
 )
 
@@ -85,16 +104,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "🤖 **Torrent Bot**\n\n"
-        "*Commands:*\n"
-        "📥 Send magnet/torrent file\n"
-        "/status - View active downloads\n"
-        "/feeds - Manage RSS feeds\n"
-        "/add\_feed - Add RSS feed\n"
-        "/list\_feeds - List RSS feeds\n"
-        "/poll\_feeds - Force RSS poll\n"
-        "/remove\_feed - Remove RSS feed",
-        parse_mode="MarkdownV2"
+        "🤖 **Torrent Bot**
+
+"
+        "*Commands:*
+"
+        "📥 Send magnet/torrent file
+"
+        "/status - View active downloads
+"
+        "/feeds - Manage RSS feeds
+"
+        "/add_feed - Add RSS feed
+"
+        "/list_feeds - List RSS feeds
+"
+        "/poll_feeds - Force RSS poll
+"
+        "/remove_feed - Remove RSS feed",
+        parse_mode="Markdown"
     )
 
 
@@ -147,7 +175,6 @@ async def handle_service_selection(update: Update, context: ContextTypes.DEFAULT
     data = query.data.split(":", 2)
     service = data[1]
     magnet = data[2] if data[2] != "file" else None
-    torrent_file = context.user_data.get("pending_torrent")
 
     # Ask for upload destination
     keyboard = [
@@ -202,7 +229,8 @@ async def handle_destination_selection(update: Update, context: ContextTypes.DEF
                 result = rd_client.add_torrent(torrent_file)
 
             torrent_id = result.get("id")
-            await query.edit_message_text(f"✅ Added to Real-Debrid\nID: `{torrent_id}`", parse_mode="MarkdownV2")
+            await query.edit_message_text(f"✅ Added to Real-Debrid
+ID: `{torrent_id}`", parse_mode="Markdown")
 
             # Store for monitoring
             state_manager.add_torrent(
@@ -224,7 +252,8 @@ async def handle_destination_selection(update: Update, context: ContextTypes.DEF
                 result = sb_client.add_torrent(torrent_file)
 
             torrent_hash = result.get("hash")
-            await query.edit_message_text(f"✅ Added to Seedbox\nHash: `{torrent_hash}`", parse_mode="MarkdownV2")
+            await query.edit_message_text(f"✅ Added to Seedbox
+Hash: `{torrent_hash}`", parse_mode="Markdown")
 
             # Store for monitoring
             state_manager.add_torrent(
@@ -233,14 +262,13 @@ async def handle_destination_selection(update: Update, context: ContextTypes.DEF
                 user_id=user_id,
                 upload_intent=destination,
                 chat_id=upload_chat_id,
-                delete_after_upload=False  # Manual adds don't auto-delete
+                delete_after_upload=False
             )
 
     except Exception as e:
         logger.error(f"Error adding torrent: {e}", exc_info=True)
         await query.edit_message_text(f"❌ Error: {str(e)}")
     finally:
-        # Cleanup
         context.user_data.pop("pending_torrent", None)
 
 
@@ -257,10 +285,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 No active torrents")
         return
 
-    # Create live status message
     status_msg = await update.message.reply_text("⏳ Loading status...")
 
-    # Register for live updates
     await status_manager.start_status(
         user_id=user_id,
         message_id=status_msg.message_id,
@@ -271,39 +297,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== RSS COMMANDS ====================
 
-async def rss_feeds_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show RSS feeds management menu"""
-    if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
-        return
-
-    feeds = rss_manager.list_feeds()
-
-    if not feeds:
-        text = "📰 *RSS Feeds*\n\nNo feeds configured\."
-    else:
-        text = "📰 *RSS Feeds*\n\n"
-        for i, feed in enumerate(feeds, 1):
-            url = feed["url"].replace(".", "\.").replace("-", "\-")
-            service = feed.get("service", "rd")
-            text += f"{i}\. `{url}` \({service}\)\n"
-
-    keyboard = [
-        [InlineKeyboardButton("➕ Add Feed", callback_data="rss:add")],
-        [InlineKeyboardButton("🔄 Poll Now", callback_data="rss:poll")],
-        [InlineKeyboardButton("🗑 Remove Feed", callback_data="rss:remove")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="MarkdownV2")
-
-
 async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Add RSS feed command
-    Usage: /add_feed <url> [service] [private]
-    Example: /add_feed https://nyaa.si/?page=rss&u=tsuna69 rd true
-    """
+    """Add RSS feed command"""
     if not check_auth(update.effective_user.id):
         await update.message.reply_text("❌ Unauthorized")
         return
@@ -311,13 +306,19 @@ async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         await update.message.reply_text(
-            "Usage: `/add_feed <url> [service] [private] [delete_after_upload]`\n\n"
-            "Examples:\n"
-            "`/add_feed https://nyaa\.si/?page=rss&u=tsuna69`\n"
-            "`/add_feed https://nyaa\.si/?page=rss&u=tsuna69 rd`\n"
-            "`/add_feed https://nyaa\.si/?page=rss&u=tsuna69 sb true`\n"
-            "`/add_feed https://nyaa\.si/?page=rss&u=tsuna69 sb false true`",
-            parse_mode="MarkdownV2"
+            "Usage: `/add_feed <url> [service] [private] [delete_after_upload]`
+
+"
+            "Examples:
+"
+            "`/add_feed https://nyaa.si/?page=rss&u=tsuna69`
+"
+            "`/add_feed https://nyaa.si/?page=rss&u=tsuna69 rd`
+"
+            "`/add_feed https://nyaa.si/?page=rss&u=tsuna69 sb true`
+"
+            "`/add_feed https://nyaa.si/?page=rss&u=tsuna69 sb false true`",
+            parse_mode="Markdown"
         )
         return
 
@@ -333,11 +334,14 @@ async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         delete_text = "✅" if delete_after_upload else "❌"
 
         await update.message.reply_text(
-            f"✅ Added feed:\n"
-            f"`{url}`\n"
-            f"Service: {service_text}\n"
+            f"✅ Added feed:
+"
+            f"`{url}`
+"
+            f"Service: {service_text}
+"
             f"Delete after upload: {delete_text}",
-            parse_mode="MarkdownV2"
+            parse_mode="Markdown"
         )
     except Exception as e:
         logger.error(f"Error adding feed: {e}", exc_info=True)
@@ -356,14 +360,17 @@ async def cmd_list_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 No RSS feeds configured")
         return
 
-    text = "📰 *RSS Feeds:*\n\n"
+    text = "📰 *RSS Feeds:*
+
+"
     for i, feed in enumerate(feeds, 1):
-        url = feed["url"].replace(".", "\.").replace("-", "\-").replace("_", "\_")
+        url = feed["url"]
         service = feed.get("service", "auto")
         delete = "🗑" if feed.get("delete_after_upload", False) else ""
-        text += f"{i}\. `{url}` \({service}\) {delete}\n"
+        text += f"{i}. `{url}` ({service}) {delete}
+"
 
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_poll_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -387,10 +394,7 @@ async def cmd_poll_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Remove RSS feed command
-    Usage: /remove_feed <index or url>
-    """
+    """Remove RSS feed command"""
     if not check_auth(update.effective_user.id):
         await update.message.reply_text("❌ Unauthorized")
         return
@@ -398,52 +402,52 @@ async def cmd_remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         await update.message.reply_text(
-            "Usage: `/remove_feed <index or url>`\n\n"
-            "Example: `/remove_feed 1` or `/remove_feed https://example\.com/rss`",
-            parse_mode="MarkdownV2"
+            "Usage: `/remove_feed <index or url>`
+
+"
+            "Example: `/remove_feed 1` or `/remove_feed https://example.com/rss`",
+            parse_mode="Markdown"
         )
         return
 
     identifier = " ".join(args)
 
     try:
-        # Try as index first
         if identifier.isdigit():
             index = int(identifier) - 1
             feeds = rss_manager.list_feeds()
             if 0 <= index < len(feeds):
                 url = feeds[index]["url"]
                 rss_manager.remove_feed(url)
-                await update.message.reply_text(f"✅ Removed feed: `{url}`", parse_mode="MarkdownV2")
+                await update.message.reply_text(f"✅ Removed feed: `{url}`", parse_mode="Markdown")
             else:
                 await update.message.reply_text("❌ Invalid feed index")
         else:
             rss_manager.remove_feed(identifier)
-            await update.message.reply_text(f"✅ Removed feed: `{identifier}`", parse_mode="MarkdownV2")
+            await update.message.reply_text(f"✅ Removed feed: `{identifier}`", parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"Error removing feed: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 
-async def rss_poll_loop(application: Application):
+# ==================== BACKGROUND TASKS ====================
+
+async def rss_poll_loop(application):
     """Background task to poll RSS feeds periodically"""
     logger.info(f"Starting RSS poll loop (interval={RSS_POLL_INTERVAL}s)")
 
     while True:
         try:
             await asyncio.sleep(RSS_POLL_INTERVAL)
-
             new_items = await rss_manager.poll_feeds()
-
             if new_items > 0:
                 logger.info(f"RSS poll found {new_items} new item(s)")
-
         except Exception as e:
             logger.error(f"Error in RSS poll loop: {e}", exc_info=True)
 
 
-async def monitor_loop(application: Application):
+async def monitor_loop(application):
     """Background task to monitor torrent completion"""
     logger.info("Starting torrent monitor loop")
 
@@ -460,7 +464,6 @@ async def monitor_loop(application: Application):
             for torrent in completed:
                 logger.info(f"⏳ Ready for download: {torrent['name']}")
 
-                # Download and upload
                 asyncio.create_task(
                     download_and_upload(
                         torrent=torrent,
@@ -472,26 +475,21 @@ async def monitor_loop(application: Application):
                     )
                 )
 
-            await asyncio.sleep(30)  # Check every 30 seconds
-
+            await asyncio.sleep(30)
         except Exception as e:
             logger.error(f"Error in monitor loop: {e}", exc_info=True)
             await asyncio.sleep(60)
 
 
-async def post_init(application: Application):
+async def post_init(application):
     """Initialize background tasks"""
-    # Start monitor loop
     asyncio.create_task(monitor_loop(application))
-
-    # Start RSS poll loop
     asyncio.create_task(rss_poll_loop(application))
 
     logger.info("✅ Background tasks started")
-    logger.info(f"📰 RSS auto-polling started (interval: {RSS_POLL_INTERVAL}s)")
-    logger.info(f"📤 RSS upload destination: {RSS_UPLOAD_DEST}")
-    logger.info(f"⏱ RSS API delay: {RSS_API_DELAY}s")
-    logger.info(f"🗑 RSS delete after upload: {RSS_DELETE_AFTER_UPLOAD}")
+    logger.info(f"📰 RSS auto-polling (interval: {RSS_POLL_INTERVAL}s)")
+    logger.info(f"📤 RSS upload: {RSS_UPLOAD_DEST}")
+    logger.info(f"⏱ API delay: {RSS_API_DELAY}s")
 
 
 def main():
@@ -500,33 +498,61 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN not set")
         return
 
-    # Create application
-    application = Application.builder().token(TOKEN).post_init(post_init).build()
+    logger.info(f"Using python-telegram-bot v{PTB_VERSION}")
 
-    # Command handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("feeds", rss_feeds_menu))
-    application.add_handler(CommandHandler("add_feed", cmd_add_feed))
-    application.add_handler(CommandHandler("rss_add", cmd_add_feed))  # Alias
-    application.add_handler(CommandHandler("list_feeds", cmd_list_feeds))
-    application.add_handler(CommandHandler("rss_list", cmd_list_feeds))  # Alias
-    application.add_handler(CommandHandler("poll_feeds", cmd_poll_feeds))
-    application.add_handler(CommandHandler("rss_poll", cmd_poll_feeds))  # Alias
-    application.add_handler(CommandHandler("remove_feed", cmd_remove_feed))
-    application.add_handler(CommandHandler("rss_remove", cmd_remove_feed))  # Alias
+    if PTB_VERSION == 20:
+        # v20+ (Application)
+        application = Application.builder().token(TOKEN).post_init(post_init).build()
 
-    # Message handlers
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_magnet))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_magnet))
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("status", status))
+        application.add_handler(CommandHandler("add_feed", cmd_add_feed))
+        application.add_handler(CommandHandler("rss_add", cmd_add_feed))
+        application.add_handler(CommandHandler("list_feeds", cmd_list_feeds))
+        application.add_handler(CommandHandler("rss_list", cmd_list_feeds))
+        application.add_handler(CommandHandler("poll_feeds", cmd_poll_feeds))
+        application.add_handler(CommandHandler("rss_poll", cmd_poll_feeds))
+        application.add_handler(CommandHandler("remove_feed", cmd_remove_feed))
+        application.add_handler(CommandHandler("rss_remove", cmd_remove_feed))
 
-    # Callback handlers
-    application.add_handler(CallbackQueryHandler(handle_service_selection, pattern="^service:"))
-    application.add_handler(CallbackQueryHandler(handle_destination_selection, pattern="^dest:"))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_magnet))
+        application.add_handler(MessageHandler(filters.Document.ALL, handle_magnet))
 
-    # Start bot
-    logger.info("🚀 Bot started")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+        application.add_handler(CallbackQueryHandler(handle_service_selection, pattern="^service:"))
+        application.add_handler(CallbackQueryHandler(handle_destination_selection, pattern="^dest:"))
+
+        logger.info("🚀 Bot started (v20+)")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    else:
+        # v13 (Updater)
+        updater = Updater(TOKEN, use_context=True)
+        dp = updater.dispatcher
+
+        dp.add_handler(CommandHandler("start", start))
+        dp.add_handler(CommandHandler("status", status))
+        dp.add_handler(CommandHandler("add_feed", cmd_add_feed))
+        dp.add_handler(CommandHandler("rss_add", cmd_add_feed))
+        dp.add_handler(CommandHandler("list_feeds", cmd_list_feeds))
+        dp.add_handler(CommandHandler("rss_list", cmd_list_feeds))
+        dp.add_handler(CommandHandler("poll_feeds", cmd_poll_feeds))
+        dp.add_handler(CommandHandler("rss_poll", cmd_poll_feeds))
+        dp.add_handler(CommandHandler("remove_feed", cmd_remove_feed))
+        dp.add_handler(CommandHandler("rss_remove", cmd_remove_feed))
+
+        dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_magnet))
+        dp.add_handler(MessageHandler(Filters.document, handle_magnet))
+
+        dp.add_handler(CallbackQueryHandler(handle_service_selection, pattern="^service:"))
+        dp.add_handler(CallbackQueryHandler(handle_destination_selection, pattern="^dest:"))
+
+        # Start background tasks
+        loop = asyncio.get_event_loop()
+        loop.create_task(post_init(updater))
+
+        logger.info("🚀 Bot started (v13)")
+        updater.start_polling()
+        updater.idle()
 
 
 if __name__ == "__main__":
