@@ -1,8 +1,8 @@
-"""Telegram bot with full production-grade handlers.
-
-Connects to real Real-Debrid, rTorrent, and yt-dlp implementations.
+#!/usr/bin/env python3
 """
-
+WZML-X v1.0 - Telegram Bot
+Production-grade bot with Real-Debrid, Seedbox (rTorrent), yt-dlp, RSS, and monitoring.
+"""
 import os
 import re
 import time
@@ -25,7 +25,7 @@ from bot.utils.system_info import format_system_metrics
 from bot.status_manager import get_status_manager
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
 
 # --- Clients ---
 try:
@@ -47,8 +47,7 @@ if rd_client or sb_client:
 # --- Monitor ---
 monitor = None
 if rd_client or sb_client:
-    # Downloader needs updater, but we don't have it yet.
-    # We will attach it inside create_app or run.
+    # We will attach it inside create_app or run
     downloader = Downloader(telegram_updater=None)
     monitor = Monitor(downloader, rd_client=rd_client, sb_client=sb_client)
 
@@ -56,11 +55,10 @@ if rd_client or sb_client:
 # --- Utils ---
 def escape_markdown(text: str) -> str:
     """Escape special characters for Telegram Markdown v1."""
-    # Characters that need escaping in Markdown: _ * [ `
     # However, since we use backticks for the table part, we mostly care about name
-    chars = ['_', '*', '[', '`']
+    chars = ['_', '*', '[', ']', '(', ')']
     for c in chars:
-        text = text.replace(c, f"\\{c}")
+        text = text.replace(c, f'\\{c}')
     return text
 
 
@@ -68,16 +66,16 @@ def escape_markdown(text: str) -> str:
 def _generate_status_text() -> str:
     """Generate status text for display and live updates."""
     try:
-        lines = ["📡 *System Status*"]
+        lines = ["📊 **System Status**"]
 
-        # 1. Downloader (Active Transfers) - ENHANCED with file counts
+        # 1. Downloader Active Transfers - ENHANCED with file counts
         active = downloader.get_active_tasks()
         if active:
-            lines.append("\n⬇️ *Active Transfers:*")
+            lines.append("\n**Active Transfers:**")
             for tid, t in active.items():
                 name = escape_markdown(t['name'])
                 if len(name) > 25:
-                    name = name[:23] + ".."
+                    name = name[:23] + '..'
                 start_ago = int(time.time() - t['start_time'])
 
                 # Build status string with progress and file count
@@ -85,41 +83,41 @@ def _generate_status_text() -> str:
 
                 # Add progress percentage if available
                 if t.get('progress_percent', 0) > 0:
-                    status_str = f"{status_str} ({t['progress_percent']:.1f}%)"
+                    status_str = f"{status_str} {t['progress_percent']:.1f}%"
 
                 # Add file count if available
                 if t.get('total_files', 0) > 0:
-                    status_str += f" | {t['uploaded_files']}/{t['total_files']} files"
+                    status_str = f"{status_str} ({t['uploaded_files']}/{t['total_files']} files)"
 
-                lines.append(f"• `{name}`\n  └ {status_str} | {start_ago}s ago")
+                lines.append(f"• `{name}` - {status_str} ({start_ago}s ago)")
 
         # 2. Seedbox (rtorrent)
         if sb_client:
             try:
-                sbt = sb_client.list_torrents()
-                active_sb = [t for t in sbt if t.get('state') in ['downloading', 'hashing']]
+                sb_t = sb_client.list_torrents()
+                active_sb = [t for t in sb_t if t.get('state') in ('downloading', 'hashing')]
                 if active_sb:
-                    lines.append("\n📦 *Seedbox:*")
+                    lines.append("\n**Seedbox:**")
                     for t in active_sb:
                         name = escape_markdown(t['name'])
                         if len(name) > 25:
-                            name = name[:23] + ".."
-                        lines.append(f"• `{name}`\n  └ {t['state'].title()} | {t['progress']:.1f}%")
+                            name = name[:23] + '..'
+                        lines.append(f"• `{name}` - {t['state'].title()} {t['progress']:.1f}%")
             except Exception as e:
                 logger.error(f"Error getting seedbox status: {e}")
 
         # 3. Real-Debrid
         if rd_client:
             try:
-                rdt = rd_client.list_torrents()
-                active_rd = [t for t in rdt if t['status'] not in ['downloaded', 'dead']]
+                rd_t = rd_client.list_torrents()
+                active_rd = [t for t in rd_t if t['status'] not in ('downloaded', 'dead')]
                 if active_rd:
-                    lines.append("\n☁️ *Real-Debrid:*")
+                    lines.append("\n**Real-Debrid:**")
                     for t in active_rd:
                         name = escape_markdown(t['filename'])
                         if len(name) > 25:
-                            name = name[:23] + ".."
-                        lines.append(f"• `{name}`\n  └ {t['status'].replace('_', ' ').title()} | {t['progress']}%")
+                            name = name[:23] + '..'
+                        lines.append(f"• `{name}` - {t['status'].replace('_', ' ').title()} {t['progress']}%")
             except Exception as e:
                 logger.error(f"Error getting RD status: {e}")
 
@@ -127,11 +125,12 @@ def _generate_status_text() -> str:
         try:
             state = get_state()
             all_jobs = state.list_jobs()
-            active_jobs = {jid: jinfo for jid, jinfo in all_jobs.items() if jinfo['status'] in ['queued', 'processing', 'running']}
+            active_jobs = {jid: jinfo for jid, jinfo in all_jobs.items() 
+                          if jinfo['status'] in ('queued', 'processing', 'running')}
             if active_jobs:
-                lines.append("\n🎬 *yt-dlp Jobs:*")
+                lines.append("\n**yt-dlp Jobs:**")
                 for jid, jinfo in active_jobs.items():
-                    lines.append(f"• `{jid[:8]}...`\n  └ {jinfo['status'].title()} | {jinfo.get('dest', 'telegram').upper()}")
+                    lines.append(f"• `{jid[:8]}...` - {jinfo['status'].title()} → {jinfo.get('dest', 'telegram').upper()}")
         except Exception as e:
             logger.error(f"Error getting job status: {e}")
 
@@ -147,7 +146,7 @@ def _generate_status_text() -> str:
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"Error generating status: {e}")
-        return f"Error getting status: {e}"
+        return f"❌ Error getting status: {e}"
 
 
 # --- RSS Auto-Decision Callback ---
@@ -186,27 +185,30 @@ def _on_rss_decision(backend: str, entry: dict):
 
 # --- Handlers ---
 def start(update: Update, context: CallbackContext):
-    msg = "WZML-X v1 (Production)\n\n"
-    msg += f"Real-Debrid: {'✅' if rd_client else '❌'}\n"
-    msg += f"Seedbox: {'✅' if sb_client else '❌'}\n"
-    msg += f"RSS Manager: {'✅' if feed_manager else '❌'}"
+    msg = "🚀 **WZML-X v1** Production\n\n"
+    msg += f"✅ Real-Debrid\n" if rd_client else "❌ Real-Debrid\n"
+    msg += f"✅ Seedbox\n" if sb_client else "❌ Seedbox\n"
+    msg += f"✅ RSS Manager\n" if feed_manager else "❌ RSS Manager\n"
     update.message.reply_text(msg)
 
 
 # Real-Debrid Commands
 def rd_torrent(update: Update, context: CallbackContext):
-    if not rd_client: return update.message.reply_text("RD not configured")
-    if not context.args: return update.message.reply_text("Usage: /rd_torrent <magnet_or_link>")
+    if not rd_client:
+        return update.message.reply_text("❌ RD not configured")
+    if not context.args:
+        return update.message.reply_text("Usage: /rd_torrent <magnet>")
     magnet = context.args[0]
     try:
         res = rd_client.add_magnet(magnet)
-        update.message.reply_text(f"Added to RD: {res.get('id', 'unknown')}")
+        update.message.reply_text(f"✅ Added to RD: {res.get('id', 'unknown')}")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def rd_torrents(update: Update, context: CallbackContext):
-    if not rd_client: return update.message.reply_text("RD not configured")
+    if not rd_client:
+        return update.message.reply_text("❌ RD not configured")
     try:
         # Default limit 20 for telegram
         items = rd_client.list_torrents(limit=20)
@@ -214,8 +216,8 @@ def rd_torrents(update: Update, context: CallbackContext):
             return update.message.reply_text("No active RD torrents")
 
         lines = []
-        lines.append(f"`{'Status':<12} | {'Progress':<8} | Filename`")
-        lines.append(f"`{'-'*12}-|-{'-'*8}-|{'-'*20}`")
+        lines.append(f"{'Status':<12} {'Progress':<8} Filename")
+        lines.append(f"{'-'*12}---{'-'*8}--{'-'*20}")
 
         for i in items:
             status = i.get('status', 'unknown')
@@ -224,56 +226,58 @@ def rd_torrents(update: Update, context: CallbackContext):
 
             # Truncate filename if too long
             if len(filename) > 35:
-                filename = filename[:33] + ".."
+                filename = filename[:33] + '..'
 
             # Status icons
-            icon = "❓"
-            if status == "downloaded":
-                icon = "✅"
-            elif status == "downloading":
-                icon = "⬇️"
-            elif status == "waiting_files_selection":
-                icon = "⏳"
-            elif status == "magnet_conversion":
-                icon = "🧲"
-            elif status == "error":
-                icon = "❌"
+            icon = ''
+            if status == 'downloaded':
+                icon = '✅'
+            elif status == 'downloading':
+                icon = '⬇️'
+            elif status == 'waiting_files_selection':
+                icon = '⏸️'
+            elif status == 'magnet_conversion':
+                icon = '🧲'
+            elif status == 'error':
+                icon = '❌'
 
-            # Format status for display
             display_status = f"{icon} {status.replace('_', ' ').title()}"
             tid = i.get('id', 'N/A')
-            line = f"`{display_status:<12} | {progress:>6}% |` {filename}\n└ ID: `{tid}`"
+            line = f"{display_status:<12} {progress:>6}% {filename} (ID: {tid})"
             lines.append(line)
 
         text = "\n".join(lines)
         if len(text) > 4000:
             text = text[:4000] + "\n...truncated..."
-        update.message.reply_text(text, parse_mode="Markdown")
+        update.message.reply_text(text, parse_mode='Markdown')
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def rd_delete(update: Update, context: CallbackContext):
-    if not rd_client: return update.message.reply_text("RD not configured")
-    if not context.args: return update.message.reply_text("Usage: /rd_delete <id>")
+    if not rd_client:
+        return update.message.reply_text("❌ RD not configured")
+    if not context.args:
+        return update.message.reply_text("Usage: /rd_delete <torrent_id>")
     try:
         rd_client.delete_torrent(context.args[0])
-        update.message.reply_text("Deleted.")
+        update.message.reply_text("✅ Deleted.")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def rd_downloads(update: Update, context: CallbackContext):
     """List unrestricted downloads history from Real-Debrid."""
-    if not rd_client: return update.message.reply_text("RD not configured")
+    if not rd_client:
+        return update.message.reply_text("❌ RD not configured")
     try:
         items = rd_client.get_downloads(limit=15)
         if not items:
             return update.message.reply_text("No downloads history")
 
         lines = []
-        lines.append(f"`{'Date':<12} | {'Size':<8} | Filename`")
-        lines.append(f"`{'-'*12}-|-{'-'*8}-|{'-'*20}`")
+        lines.append(f"{'Date':<12} {'Size':<8} Filename")
+        lines.append(f"{'-'*12}---{'-'*8}--{'-'*20}")
 
         for i in items:
             generated = i.get('generated', 'N/A')[:10]  # Just date part
@@ -283,185 +287,197 @@ def rd_downloads(update: Update, context: CallbackContext):
             # Format bytes
             def fmt_bytes(b):
                 for unit in ['B', 'KB', 'MB', 'GB']:
-                    if b < 1024.0: return f"{b:.0f}{unit}"
+                    if b < 1024.0:
+                        return f"{b:.0f}{unit}"
                     b /= 1024.0
                 return f"{b:.0f}TB"
 
             # Truncate and escape filename
             if len(filename) > 30:
-                filename = filename[:28] + ".."
+                filename = filename[:28] + '..'
             filename = escape_markdown(filename)
 
             tid = i.get('id', 'N/A')
-            line = f"`{generated:<12} | {fmt_bytes(filesize):<8} |` {filename}\n└ ID: `{tid}`"
+            line = f"{generated:<12} {fmt_bytes(filesize):<8} {filename} (ID: {tid})"
             lines.append(line)
 
         text = "\n".join(lines)
         if len(text) > 4000:
             text = text[:4000] + "\n...truncated..."
-        update.message.reply_text(text, parse_mode="Markdown")
+        update.message.reply_text(text, parse_mode='Markdown')
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def rd_unrestrict(update: Update, context: CallbackContext):
-    if not rd_client: return update.message.reply_text("RD not configured")
-    if not context.args: return update.message.reply_text("Usage: /rd_unrestrict <link>")
+    if not rd_client:
+        return update.message.reply_text("❌ RD not configured")
+    if not context.args:
+        return update.message.reply_text("Usage: /rd_unrestrict <link>")
     try:
         res = rd_client.unrestrict_link(context.args[0], remote=True)
-        dl = res.get('download')
-        update.message.reply_text(f"Download Link: {dl}")
+        dl = res['download']
+        update.message.reply_text(f"🔗 Download Link:\n{dl}")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 # Seedbox Commands
 def sb_torrent(update: Update, context: CallbackContext):
-    if not sb_client: return update.message.reply_text("Seedbox not configured")
-    if not context.args: return update.message.reply_text("Usage: /sb_torrent <magnet_link>")
+    if not sb_client:
+        return update.message.reply_text("❌ Seedbox not configured")
+    if not context.args:
+        return update.message.reply_text("Usage: /sb_torrent <magnet>")
     try:
         sb_client.add_torrent(context.args[0])
-        update.message.reply_text("Added torrent to Seedbox.")
+        update.message.reply_text("✅ Added torrent to Seedbox.")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def sb_torrents(update: Update, context: CallbackContext):
-    if not sb_client: return update.message.reply_text("Seedbox not configured")
+    if not sb_client:
+        return update.message.reply_text("❌ Seedbox not configured")
     try:
         items = sb_client.list_torrents()
         if not items:
             return update.message.reply_text("No torrents in Seedbox")
 
         lines = []
-        lines.append(f"`{'State':<10} | {'Progress':<6} | Name`")
-        lines.append(f"`{'-'*10}-|-{'-'*6}-|{'-'*20}`")
+        lines.append(f"{'State':<10} {'Progress':<6} Name")
+        lines.append(f"{'-'*10}---{'-'*6}--{'-'*20}")
 
         for i in items:
             name = i.get('name', 'N/A')
-
             # Truncate and escape name
             if len(name) > 30:
-                name = name[:28] + ".."
+                name = name[:28] + '..'
             name = escape_markdown(name)
 
             state = i.get('state', 'unknown').title()
             progress = i.get('progress', 0.0)
 
-            icon = "❓"
-            if state == "Seeding": icon = "🟢"
-            elif state == "Downloading": icon = "⬇️"
-            elif state == "Paused": icon = "⏸️"
+            icon = ''
+            if state == 'Seeding':
+                icon = '🌱'
+            elif state == 'Downloading':
+                icon = '⬇️'
+            elif state == 'Paused':
+                icon = '⏸️'
 
             shash = i.get('hash', 'N/A')
-            line = f"`{state:<10} | {progress:>5.1f}% |` {name}\n└ Hash: `{shash}`"
+            line = f"{state:<10} {progress:>5.1f}% {name} (Hash: {shash})"
             lines.append(line)
 
         text = "\n".join(lines)
         if len(text) > 4000:
             text = text[:4000] + "\n...truncated..."
-        update.message.reply_text(text, parse_mode="Markdown")
+        update.message.reply_text(text, parse_mode='Markdown')
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def sb_stop(update: Update, context: CallbackContext):
-    if not sb_client: return update.message.reply_text("Seedbox not configured")
-    if not context.args: return update.message.reply_text("Usage: /sb_stop <hash>")
+    if not sb_client:
+        return update.message.reply_text("❌ Seedbox not configured")
+    if not context.args:
+        return update.message.reply_text("Usage: /sb_stop <hash>")
     try:
         sb_client.stop_torrent(context.args[0])
-        update.message.reply_text("Stopped.")
+        update.message.reply_text("✅ Stopped.")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def sb_start(update: Update, context: CallbackContext):
-    if not sb_client: return update.message.reply_text("Seedbox not configured")
-    if not context.args: return update.message.reply_text("Usage: /sb_start <hash>")
+    if not sb_client:
+        return update.message.reply_text("❌ Seedbox not configured")
+    if not context.args:
+        return update.message.reply_text("Usage: /sb_start <hash>")
     try:
         sb_client.start_torrent(context.args[0])
-        update.message.reply_text("Started.")
+        update.message.reply_text("✅ Started.")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def sb_delete(update: Update, context: CallbackContext):
-    if not sb_client: return update.message.reply_text("Seedbox not configured")
-    if not context.args: return update.message.reply_text("Usage: /sb_delete <hash>")
+    if not sb_client:
+        return update.message.reply_text("❌ Seedbox not configured")
+    if not context.args:
+        return update.message.reply_text("Usage: /sb_delete <hash>")
     try:
         sb_client.delete_torrent(context.args[0])
-        update.message.reply_text("Deleted.")
+        update.message.reply_text("✅ Deleted.")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 # Helper functions
-def _check_rd(update: Update) -> bool:
+def check_rd(update: Update) -> bool:
     if not rd_client:
-        update.message.reply_text("Real-Debrid not configured")
+        update.message.reply_text("❌ Real-Debrid not configured")
         return False
     return True
 
 
-def _check_sb(update: Update) -> bool:
+def check_sb(update: Update) -> bool:
     if not sb_client:
-        update.message.reply_text("Seedbox not configured")
+        update.message.reply_text("❌ Seedbox not configured")
         return False
     return True
 
 
-def _get_arg(context: CallbackContext) -> Optional[str]:
+def get_arg(context: CallbackContext) -> Optional[str]:
     return context.args[0] if context.args else None
 
 
 # Download commands
 def rd_download(update: Update, context: CallbackContext):
     """Unrestrict RD link and download to local/telegram."""
-    if not _check_rd(update): return
-    link = _get_arg(context)
+    if not check_rd(update):
+        return
+    link = get_arg(context)
     if not link:
         update.message.reply_text("Usage: /rd_download <link> [dest]")
         return
-
-    dest = context.args[1] if len(context.args) > 1 else "telegram"
+    dest = context.args[1] if len(context.args) > 1 else 'telegram'
     try:
         resp = rd_client.unrestrict_link(link, remote=True)
         dl_url = resp['download']
         filename = resp['filename']
         chat_id = update.effective_chat.id
         downloader.process_item(dl_url, filename, dest=dest, chat_id=chat_id)
-        update.message.reply_text(f"Downloading {filename} to {dest}")
+        update.message.reply_text(f"⬇️ Downloading `{filename}` to {dest}")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def sb_download(update: Update, context: CallbackContext):
     """Download finished seedbox torrent."""
-    if not _check_sb(update): return
-    thash = _get_arg(context)
+    if not check_sb(update):
+        return
+    thash = get_arg(context)
     if not thash:
         update.message.reply_text("Usage: /sb_download <hash> [dest]")
         return
-
-    dest = context.args[1] if len(context.args) > 1 else "telegram"
+    dest = context.args[1] if len(context.args) > 1 else 'telegram'
     try:
         torrents = sb_client.list_torrents()
         torrent = next((t for t in torrents if t['hash'] == thash), None)
         if not torrent:
-            update.message.reply_text("Torrent not found")
+            update.message.reply_text("❌ Torrent not found")
             return
-
         base_path = torrent.get('base_path')
         if not base_path:
-            update.message.reply_text("Torrent has no base_path")
+            update.message.reply_text("❌ Torrent has no base_path")
             return
-
         dl_url = f"sftp://{base_path}"
         chat_id = update.effective_chat.id
         downloader.process_item(dl_url, torrent['name'], dest=dest, chat_id=chat_id, size=torrent.get('size', 0))
-        update.message.reply_text(f"Downloading {torrent['name']} to {dest}")
+        update.message.reply_text(f"⬇️ Downloading `{torrent['name']}` to {dest}")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 # Status Command (ENHANCED with live updates)
@@ -479,13 +495,13 @@ def status(update: Update, context: CallbackContext):
 
         # Generate and send new status
         status_text = _generate_status_text()
-        message = update.message.reply_text(status_text, parse_mode="Markdown")
+        message = update.message.reply_text(status_text, parse_mode='Markdown')
 
         # Start live updates
         sm.start_live_status(user_id, chat_id, message.message_id)
     except Exception as e:
         logger.error(f"Error in status command: {e}")
-        update.message.reply_text(f"Error getting status: {e}")
+        update.message.reply_text(f"❌ Error getting status: {e}")
 
 
 # yt-dlp Commands
@@ -494,12 +510,11 @@ def ytdl(update: Update, context: CallbackContext):
     if not context.args:
         update.message.reply_text("Usage: /ytdl <url> [telegram|gdrive]")
         return
-
     url = context.args[0]
-    dest = context.args[1] if len(context.args) > 1 else "telegram"
+    dest = context.args[1] if len(context.args) > 1 else 'telegram'
     chat_id = update.effective_chat.id
     job_id = enqueue_ytdl(url, dest=dest, chat_id=chat_id)
-    update.message.reply_text(f"Job queued: `{job_id}` (Dest: {dest})", parse_mode="Markdown")
+    update.message.reply_text(f"✅ Job queued: `{job_id}` → Dest: {dest}", parse_mode='Markdown')
 
 
 def ytdl_gdrive(update: Update, context: CallbackContext):
@@ -507,95 +522,115 @@ def ytdl_gdrive(update: Update, context: CallbackContext):
     if not context.args:
         update.message.reply_text("Usage: /ytdl_gdrive <url>")
         return
-
     url = context.args[0]
-    dest = "gdrive"
+    dest = 'gdrive'
     chat_id = update.effective_chat.id
     job_id = enqueue_ytdl(url, dest=dest, chat_id=chat_id)
-    update.message.reply_text(f"Job queued: `{job_id}` (Dest: GDrive)", parse_mode="Markdown")
+    update.message.reply_text(f"✅ Job queued: `{job_id}` → Dest: GDrive", parse_mode='Markdown')
 
 
 def rd_torrent_gdrive(update: Update, context: CallbackContext):
     """Add magnet to RD and upload to GDrive."""
-    if not _check_rd(update): return
-    magnet = _get_arg(context)
+    if not check_rd(update):
+        return
+    magnet = get_arg(context)
     if not magnet:
         update.message.reply_text("Usage: /rd_torrent_gdrive <magnet>")
         return
-
     try:
         resp = rd_client.add_magnet(magnet)
         tid = resp.get('id')
         if tid:
-            get_state().set_intent(f"rd:{tid}", "gdrive")
-            update.message.reply_text(f"Added to RD (Dest: GDrive). ID: {tid}")
+            get_state().set_intent(f"rd:{tid}", 'gdrive')
+            update.message.reply_text(f"✅ Added to RD → Dest: GDrive. (ID: {tid})")
         else:
-            update.message.reply_text(f"Added to RD but no ID returned: {resp}")
+            update.message.reply_text(f"⚠️ Added to RD but no ID returned: {resp}")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def sb_torrent_gdrive(update: Update, context: CallbackContext):
     """Add magnet to Seedbox and upload to GDrive."""
-    if not _check_sb(update): return
-    magnet = _get_arg(context)
+    import re
+    if not check_sb(update):
+        return
+    magnet = get_arg(context)
     if not magnet:
         update.message.reply_text("Usage: /sb_torrent_gdrive <magnet>")
         return
 
-    # Extract hash from magnet for intent
-    # magnet:?xt=urn:btih:HASH&...
+    # magnet:?xt=urn:btih:HASH...
     match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', magnet)
     if match:
         thash = match.group(1).upper()
-        get_state().set_intent(f"sb:{thash}", "gdrive")
+        get_state().set_intent(f"sb:{thash}", 'gdrive')
     else:
-        update.message.reply_text("Warning: Could not extract hash from magnet. Intent might fail.")
+        update.message.reply_text("⚠️ Warning: Could not extract hash from magnet. Intent might fail.")
 
     try:
         sb_client.add_torrent(magnet)
-        update.message.reply_text(f"Added to Seedbox (Dest: GDrive).")
+        update.message.reply_text(f"✅ Added to Seedbox → Dest: GDrive.")
     except Exception as e:
-        update.message.reply_text(f"Error: {e}")
+        update.message.reply_text(f"❌ Error: {e}")
 
 
 def check_job(update: Update, context: CallbackContext):
-    if not context.args: return update.message.reply_text("Usage: /job <job_id>")
+    if not context.args:
+        return update.message.reply_text("Usage: /job <job_id>")
     info = job_status(context.args[0])
-    update.message.reply_text(f"Job Status: {info}")
+    update.message.reply_text(f"📋 Job Status:\n{info}")
 
 
-# RSS Commands
+# RSS Commands - BOTH naming styles supported!
 def add_feed(update: Update, context: CallbackContext):
-    if not feed_manager: return update.message.reply_text("RSS Manager disabled")
-    if not context.args: return update.message.reply_text("Usage: /add_feed <url> [force:rd|sb] [private:true|false]")
-
+    if not feed_manager:
+        return update.message.reply_text("❌ RSS Manager disabled")
+    if not context.args:
+        return update.message.reply_text("Usage: /add_feed <url> [force:rd|sb] [private:true|false]")
     url = context.args[0]
     forced = context.args[1] if len(context.args) > 1 and context.args[1] in ('rd', 'sb') else None
     private = context.args[2].lower() == 'true' if len(context.args) > 2 else False
 
-    feed_manager.add_feed(url, forced_backend=forced, private_torrents=private)
-    update.message.reply_text(f"Added feed {url}")
+    try:
+        feed_manager.add_feed(url, forced_backend=forced, private_torrents=private)
+        msg = f"✅ Added feed:\n`{url}`"
+        if forced:
+            msg += f"\nForced backend: **{forced.upper()}**"
+        if private:
+            msg += "\nPrivate torrents: **enabled**"
+        update.message.reply_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        update.message.reply_text(f"❌ Error adding feed: {e}")
 
 
 def list_feeds(update: Update, context: CallbackContext):
-    if not feed_manager: return update.message.reply_text("RSS Manager disabled")
+    if not feed_manager:
+        return update.message.reply_text("❌ RSS Manager disabled")
     feeds = feed_manager.list_feeds()
-    if not feeds: return update.message.reply_text("No feeds.")
+    if not feeds:
+        return update.message.reply_text("📭 No feeds configured.")
 
-    lines = [f"• {f.url} (force={f.forced_backend}, priv={f.private_torrents})" for f in feeds]
-    update.message.reply_text("\n".join(lines))
+    lines = ["📰 **RSS Feeds:**\n"]
+    for idx, f in enumerate(feeds, 1):
+        line = f"{idx}. `{f.url}`"
+        if f.forced_backend:
+            line += f" (forced: **{f.forced_backend.upper()}**)"
+        if f.private_torrents:
+            line += " 🔒"
+        lines.append(line)
+
+    update.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 
 def poll_feeds(update: Update, context: CallbackContext):
-    if not feed_manager: return update.message.reply_text("RSS Manager disabled")
+    if not feed_manager:
+        return update.message.reply_text("❌ RSS Manager disabled")
 
     results = []
-
     def on_decide(backend, entry):
         title = entry.get('title', 'Unknown')
         link = entry.get('link') or entry.get('guid')
-        results.append(f"Route {title} -> {backend}")
+        results.append(f"📥 Route: {title} → **{backend.upper()}**")
 
         # Action!
         try:
@@ -604,15 +639,42 @@ def poll_feeds(update: Update, context: CallbackContext):
             elif backend == 'sb' and sb_client:
                 sb_client.add_torrent(link)
         except Exception as e:
-            results.append(f"Error adding {title}: {e}")
+            results.append(f"❌ Error adding {title}: {e}")
 
-    update.message.reply_text("Polling...")
+    update.message.reply_text("🔄 Polling feeds...")
     feed_manager.poll_once(on_decision=on_decide)
 
     if results:
-        update.message.reply_text("\n".join(results))
+        update.message.reply_text("\n".join(results), parse_mode='Markdown')
     else:
-        update.message.reply_text("No new items routed.")
+        update.message.reply_text("✅ No new items routed.")
+
+
+def remove_feed(update: Update, context: CallbackContext):
+    """Remove RSS feed by URL or index."""
+    if not feed_manager:
+        return update.message.reply_text("❌ RSS Manager disabled")
+    if not context.args:
+        return update.message.reply_text("Usage: /remove_feed <url_or_index>")
+
+    arg = context.args[0]
+    feeds = feed_manager.list_feeds()
+
+    # Try as index first
+    try:
+        idx = int(arg) - 1
+        if 0 <= idx < len(feeds):
+            url = feeds[idx].url
+            feed_manager.remove_feed(url)
+            return update.message.reply_text(f"✅ Removed feed #{idx+1}: `{url}`", parse_mode='Markdown')
+        else:
+            return update.message.reply_text(f"❌ Invalid index: {arg}")
+    except ValueError:
+        # Not an index, try as URL
+        if feed_manager.remove_feed(arg):
+            return update.message.reply_text(f"✅ Removed feed: `{arg}`", parse_mode='Markdown')
+        else:
+            return update.message.reply_text(f"❌ Feed not found: `{arg}`", parse_mode='Markdown')
 
 
 # --- App ---
@@ -625,47 +687,56 @@ def create_app(token: str) -> Updater:
     sm.set_bot(updater.bot)
     sm.set_status_generator(_generate_status_text)
 
-    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler('start', start))
 
     # RD
-    dp.add_handler(CommandHandler("rd_torrent", rd_torrent))
-    dp.add_handler(CommandHandler("rd_torrents", rd_torrents))
-    dp.add_handler(CommandHandler("rd_delete", rd_delete))
-    dp.add_handler(CommandHandler("rd_downloads", rd_downloads))
-    dp.add_handler(CommandHandler("rd_unrestrict", rd_unrestrict))
-    dp.add_handler(CommandHandler("rd_download", rd_download))
+    dp.add_handler(CommandHandler('rd_torrent', rd_torrent))
+    dp.add_handler(CommandHandler('rd_torrents', rd_torrents))
+    dp.add_handler(CommandHandler('rd_delete', rd_delete))
+    dp.add_handler(CommandHandler('rd_downloads', rd_downloads))
+    dp.add_handler(CommandHandler('rd_unrestrict', rd_unrestrict))
+    dp.add_handler(CommandHandler('rd_download', rd_download))
 
     # Seedbox
-    dp.add_handler(CommandHandler("sb_torrent", sb_torrent))
-    dp.add_handler(CommandHandler("sb_torrents", sb_torrents))
-    dp.add_handler(CommandHandler("sb_stop", sb_stop))
-    dp.add_handler(CommandHandler("sb_start", sb_start))
-    dp.add_handler(CommandHandler("sb_delete", sb_delete))
-    dp.add_handler(CommandHandler("sb_download", sb_download))
+    dp.add_handler(CommandHandler('sb_torrent', sb_torrent))
+    dp.add_handler(CommandHandler('sb_torrents', sb_torrents))
+    dp.add_handler(CommandHandler('sb_stop', sb_stop))
+    dp.add_handler(CommandHandler('sb_start', sb_start))
+    dp.add_handler(CommandHandler('sb_delete', sb_delete))
+    dp.add_handler(CommandHandler('sb_download', sb_download))
+
+    # GDrive uploads
+    dp.add_handler(CommandHandler('rd_torrent_gdrive', rd_torrent_gdrive))
+    dp.add_handler(CommandHandler('sb_torrent_gdrive', sb_torrent_gdrive))
 
     # yt-dlp
-    dp.add_handler(CommandHandler("rd_torrent_gdrive", rd_torrent_gdrive))
-    dp.add_handler(CommandHandler("sb_torrent_gdrive", sb_torrent_gdrive))
-    dp.add_handler(CommandHandler("ytdl", ytdl))
-    dp.add_handler(CommandHandler("ytdl_gdrive", ytdl_gdrive))
-    dp.add_handler(CommandHandler("job", check_job))
-    dp.add_handler(CommandHandler("status", status))
+    dp.add_handler(CommandHandler('ytdl', ytdl))
+    dp.add_handler(CommandHandler('ytdl_gdrive', ytdl_gdrive))
+    dp.add_handler(CommandHandler('job', check_job))
+    dp.add_handler(CommandHandler('status', status))
 
-    # RSS
-    dp.add_handler(CommandHandler("add_feed", add_feed))
-    dp.add_handler(CommandHandler("list_feeds", list_feeds))
-    dp.add_handler(CommandHandler("poll_feeds", poll_feeds))
+    # RSS - BOTH naming styles supported!
+    dp.add_handler(CommandHandler('add_feed', add_feed))
+    dp.add_handler(CommandHandler('rss_add', add_feed))  # Alternative name
+
+    dp.add_handler(CommandHandler('list_feeds', list_feeds))
+    dp.add_handler(CommandHandler('rss_list', list_feeds))  # Alternative name
+
+    dp.add_handler(CommandHandler('poll_feeds', poll_feeds))
+    dp.add_handler(CommandHandler('rss_poll', poll_feeds))  # Alternative name
+
+    dp.add_handler(CommandHandler('remove_feed', remove_feed))
+    dp.add_handler(CommandHandler('rss_remove', remove_feed))  # Alternative name
 
     return updater
 
 
 def run():
-    token = (BOT_TOKEN or os.getenv("BOT_TOKEN", "")).strip()
+    token = BOT_TOKEN or os.getenv('BOT_TOKEN', '').strip()
     if not token:
         logger.error("BOT_TOKEN not set")
         return
 
-    # Debug info (safe part only)
     logger.info(f"DEBUG: Token loaded. Length: {len(token)} | Starts with: {token[:4]}... | Ends with: ...{token[-4:]} | Hidden chars check: {repr(token) == repr(token.strip())}")
 
     updater = create_app(token)
@@ -684,8 +755,8 @@ def run():
         rss_interval = int(os.getenv('RSS_POLL_INTERVAL', '900'))  # Default 15 minutes
         rss_thread = threading.Thread(
             target=feed_manager.run_polling,
-            args=(rss_interval,),
-            kwargs={'on_decision': _on_rss_decision},
+            args=(rss_interval,),                      # ← Pass interval
+            kwargs={'on_decision': _on_rss_decision},  # ← Pass callback
             daemon=True
         )
         rss_thread.start()
