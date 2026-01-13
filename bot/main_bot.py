@@ -103,27 +103,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Unauthorized")
         return
 
-    await update.message.reply_text(
-        "🤖 **Torrent Bot**
-
-"
-        "*Commands:*
-"
-        "📥 Send magnet/torrent file
-"
-        "/status - View active downloads
-"
-        "/feeds - Manage RSS feeds
-"
-        "/add_feed - Add RSS feed
-"
-        "/list_feeds - List RSS feeds
-"
-        "/poll_feeds - Force RSS poll
-"
-        "/remove_feed - Remove RSS feed",
-        parse_mode="Markdown"
+    msg = (
+        "🤖 Torrent Bot\n\n"
+        "Commands:\n"
+        "📥 Send magnet/torrent file\n"
+        "/status - View active downloads\n"
+        "/add\_feed - Add RSS feed\n"
+        "/list\_feeds - List RSS feeds\n"
+        "/poll\_feeds - Force RSS poll\n"
+        "/remove\_feed - Remove RSS feed"
     )
+
+    await update.message.reply_text(msg, parse_mode="MarkdownV2")
 
 
 async def handle_magnet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -229,8 +220,7 @@ async def handle_destination_selection(update: Update, context: ContextTypes.DEF
                 result = rd_client.add_torrent(torrent_file)
 
             torrent_id = result.get("id")
-            await query.edit_message_text(f"✅ Added to Real-Debrid
-ID: `{torrent_id}`", parse_mode="Markdown")
+            await query.edit_message_text(f"✅ Added to Real-Debrid\nID: `{torrent_id}`", parse_mode="MarkdownV2")
 
             # Store for monitoring
             state_manager.add_torrent(
@@ -252,8 +242,7 @@ ID: `{torrent_id}`", parse_mode="Markdown")
                 result = sb_client.add_torrent(torrent_file)
 
             torrent_hash = result.get("hash")
-            await query.edit_message_text(f"✅ Added to Seedbox
-Hash: `{torrent_hash}`", parse_mode="Markdown")
+            await query.edit_message_text(f"✅ Added to Seedbox\nHash: `{torrent_hash}`", parse_mode="MarkdownV2")
 
             # Store for monitoring
             state_manager.add_torrent(
@@ -305,21 +294,15 @@ async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     if not args:
-        await update.message.reply_text(
-            "Usage: `/add_feed <url> [service] [private] [delete_after_upload]`
-
-"
-            "Examples:
-"
-            "`/add_feed https://nyaa.si/?page=rss&u=tsuna69`
-"
-            "`/add_feed https://nyaa.si/?page=rss&u=tsuna69 rd`
-"
-            "`/add_feed https://nyaa.si/?page=rss&u=tsuna69 sb true`
-"
-            "`/add_feed https://nyaa.si/?page=rss&u=tsuna69 sb false true`",
-            parse_mode="Markdown"
+        msg = (
+            "Usage: /add\_feed <url> \[service\] \[private\] \[delete\]\n\n"
+            "Examples:\n"
+            "`/add_feed https://nyaa\.si/?page=rss`\n"
+            "`/add_feed https://nyaa\.si/?page=rss rd`\n"
+            "`/add_feed https://nyaa\.si/?page=rss sb true`\n"
+            "`/add_feed https://nyaa\.si/?page=rss sb false true`"
         )
+        await update.message.reply_text(msg, parse_mode="MarkdownV2")
         return
 
     url = args[0]
@@ -333,16 +316,8 @@ async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service_text = service if service else "auto"
         delete_text = "✅" if delete_after_upload else "❌"
 
-        await update.message.reply_text(
-            f"✅ Added feed:
-"
-            f"`{url}`
-"
-            f"Service: {service_text}
-"
-            f"Delete after upload: {delete_text}",
-            parse_mode="Markdown"
-        )
+        msg = f"✅ Added feed:\n`{url}`\nService: {service_text}\nDelete: {delete_text}"
+        await update.message.reply_text(msg, parse_mode="MarkdownV2")
     except Exception as e:
         logger.error(f"Error adding feed: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Error: {str(e)}")
@@ -360,17 +335,14 @@ async def cmd_list_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 No RSS feeds configured")
         return
 
-    text = "📰 *RSS Feeds:*
-
-"
+    text = "📰 RSS Feeds:\n\n"
     for i, feed in enumerate(feeds, 1):
-        url = feed["url"]
+        url = feed["url"].replace("_", "\_").replace(".", "\.").replace("-", "\-")
         service = feed.get("service", "auto")
         delete = "🗑" if feed.get("delete_after_upload", False) else ""
-        text += f"{i}. `{url}` ({service}) {delete}
-"
+        text += f"{i}\. `{url}` \({service}\) {delete}\n"
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
 async def cmd_poll_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -401,13 +373,8 @@ async def cmd_remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     if not args:
-        await update.message.reply_text(
-            "Usage: `/remove_feed <index or url>`
-
-"
-            "Example: `/remove_feed 1` or `/remove_feed https://example.com/rss`",
-            parse_mode="Markdown"
-        )
+        msg = "Usage: /remove\_feed <index or url>\n\nExample: `/remove_feed 1`"
+        await update.message.reply_text(msg, parse_mode="MarkdownV2")
         return
 
     identifier = " ".join(args)
@@ -419,12 +386,14 @@ async def cmd_remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if 0 <= index < len(feeds):
                 url = feeds[index]["url"]
                 rss_manager.remove_feed(url)
-                await update.message.reply_text(f"✅ Removed feed: `{url}`", parse_mode="Markdown")
+                url_escaped = url.replace("_", "\_").replace(".", "\.").replace("-", "\-")
+                await update.message.reply_text(f"✅ Removed feed: `{url_escaped}`", parse_mode="MarkdownV2")
             else:
                 await update.message.reply_text("❌ Invalid feed index")
         else:
             rss_manager.remove_feed(identifier)
-            await update.message.reply_text(f"✅ Removed feed: `{identifier}`", parse_mode="Markdown")
+            identifier_escaped = identifier.replace("_", "\_").replace(".", "\.").replace("-", "\-")
+            await update.message.reply_text(f"✅ Removed feed: `{identifier_escaped}`", parse_mode="MarkdownV2")
 
     except Exception as e:
         logger.error(f"Error removing feed: {e}", exc_info=True)
