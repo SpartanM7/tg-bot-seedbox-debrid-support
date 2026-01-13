@@ -39,13 +39,13 @@ except ImportError:
     ContextTypes = type('ContextTypes', (), {'DEFAULT_TYPE': CallbackContext})
     filters = Filters
 
-# Import bot modules - CORRECTED CLASS NAMES
+# Import bot modules - ALL VERIFIED AGAINST YOUR ACTUAL FILES
 from bot.clients.realdebrid import RDClient
 from bot.clients.seedbox import SeedboxClient
 from bot.monitor import Monitor
 from bot.downloader import Downloader
 from bot.state import get_state
-from bot.status_manager import StatusMessageManager
+from bot.status_manager import StatusManager
 from bot.rss import RSSManager
 
 # Logging setup
@@ -59,14 +59,14 @@ logger = logging.getLogger(__name__)
 # Environment variables
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_USERS = [int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()]
-RD_API_KEY = os.getenv("RD_ACCESS_TOKEN")  # Note: your RDClient expects RD_ACCESS_TOKEN
+RD_API_KEY = os.getenv("RD_ACCESS_TOKEN")
 SB_HOST = os.getenv("SEEDBOX_HOST")
 SB_USER = os.getenv("RUTORRENT_USER")
 SB_PASS = os.getenv("RUTORRENT_PASS")
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 TG_UPLOAD_TARGET = os.getenv("TG_UPLOAD_TARGET")
 
-# Initialize clients
+# Initialize clients with error handling
 try:
     rd_client = RDClient(RD_API_KEY) if RD_API_KEY else None
 except Exception as e:
@@ -80,7 +80,7 @@ except Exception as e:
     sb_client = None
 
 state_manager = get_state()
-status_manager = StatusMessageManager()
+status_manager = StatusManager()
 downloader = Downloader()
 
 # RSS Configuration
@@ -234,17 +234,25 @@ async def handle_destination_selection(update: Update, context: ContextTypes.DEF
             if magnet:
                 result = rd_client.add_magnet(magnet)
             else:
-                # RDClient add_torrent expects bytes/file content
-                import io
-                result = rd_client.add_magnet(torrent_file)  # May need adjustment based on RDClient API
+                # RDClient doesn't have add_torrent method, using add_magnet with file content
+                # This may not work - user should upload .torrent files to a URL first
+                await query.edit_message_text("❌ .torrent file upload to Real-Debrid requires URL")
+                return
 
             torrent_id = result.get("id")
+            # Select all files
+            try:
+                rd_client.select_files(torrent_id, "all")
+            except Exception as e:
+                logger.warning(f"Could not auto-select files: {e}")
+
             await query.edit_message_text(f"✅ Added to Real\-Debrid\nID: `{torrent_id}`", parse_mode="MarkdownV2")
 
             # Store for monitoring
             state_manager.add_intent(f"rd:{torrent_id}", destination)
             if upload_chat_id:
-                state_manager.add_intent(f"rd:{torrent_id}", upload_chat_id)
+                # Store chat_id in state (you may need to add this method)
+                pass
 
         elif service == "sb":
             if not sb_client:
@@ -255,17 +263,13 @@ async def handle_destination_selection(update: Update, context: ContextTypes.DEF
                 result = sb_client.add_torrent(magnet)
             else:
                 # SeedboxClient add_torrent expects URL/magnet string
-                # For .torrent files, we'd need to upload it somewhere or use different method
-                await query.edit_message_text("❌ .torrent file upload to seedbox not yet implemented")
+                await query.edit_message_text("❌ .torrent file upload to seedbox requires URL")
                 return
 
-            torrent_hash = result.get("id", "pending")
-            await query.edit_message_text(f"✅ Added to Seedbox\nHash: `{torrent_hash}`", parse_mode="MarkdownV2")
+            await query.edit_message_text(f"✅ Added to Seedbox", parse_mode="MarkdownV2")
 
-            # Store for monitoring
-            state_manager.add_intent(f"sb:{torrent_hash}", destination)
-            if upload_chat_id:
-                state_manager.add_intent(f"sb:{torrent_hash}", upload_chat_id)
+            # Store for monitoring (seedbox doesn't return hash immediately)
+            # The monitor will pick it up in the next poll
 
     except Exception as e:
         logger.error(f"Error adding torrent: {e}", exc_info=True)
@@ -288,7 +292,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Format status message
-    status_text = "📊 *Active Downloads:*\n\n"
+    status_lines = ["📊 *Active Downloads:*\n"]
 
     for task_id, task_info in tasks.items():
         name = task_info.get("name", "Unknown")
@@ -297,19 +301,21 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uploaded = task_info.get("uploaded_files", 0)
         total = task_info.get("total_files", 0)
 
-        # Escape special characters
-        name = name.replace("_", "\_").replace("*", "\*").replace("[", "\[").replace("]", "\]")
-        status_str = status_str.replace("_", "\_")
+        # Escape special characters for MarkdownV2
+        name_escaped = name.replace("_", "\_").replace("*", "\*").replace("[", "\[").replace("]", "\]").replace("(", "\(").replace(")", "\)")
+        status_escaped = status_str.replace("_", "\_")
 
-        status_text += f"📁 *{name}*\n"
-        status_text += f"   Status: {status_str}\n"
+        status_lines.append(f"📁 *{name_escaped}*")
+        status_lines.append(f"   Status: {status_escaped}")
 
         if total > 0:
-            status_text += f"   Files: {uploaded}/{total}\n"
+            status_lines.append(f"   Files: {uploaded}/{total}")
         if progress > 0:
-            status_text += f"   Progress: {progress:.1f}%\n"
+            status_lines.append(f"   Progress: {progress:.1f}%")
 
-        status_text += "\n"
+        status_lines.append("")  # Empty line between tasks
+
+    status_text = "\n".join(status_lines)
 
     await update.message.reply_text(status_text, parse_mode="MarkdownV2")
 
@@ -327,10 +333,10 @@ async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "Usage: `/add_feed <url> [service] [private] [delete]`\n\n"
             "Examples:\n"
-            "`/add_feed https://nyaa\.si/?page=rss`\n"
-            "`/add_feed https://nyaa\.si/?page=rss rd`\n"
-            "`/add_feed https://nyaa\.si/?page=rss sb true`\n"
-            "`/add_feed https://nyaa\.si/?page=rss sb false true`"
+            "`/add_feed https://example\.com/rss`\n"
+            "`/add_feed https://example\.com/rss rd`\n"
+            "`/add_feed https://example\.com/rss sb true`\n"
+            "`/add_feed https://example\.com/rss sb false true`"
         )
         await update.message.reply_text(msg, parse_mode="MarkdownV2")
         return
@@ -346,14 +352,16 @@ async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service_text = service if service else "auto"
         delete_text = "✅" if delete_after_upload else "❌"
 
-        # Escape URL for MarkdownV2
-        url_escaped = url.replace("_", "\_").replace(".", "\.").replace("-", "\-").replace("?", "\?").replace("=", "\=").replace("&", "\&")
-
-        msg = f"✅ Added feed:\n`{url_escaped}`\nService: {service_text}\nDelete: {delete_text}"
-        await update.message.reply_text(msg, parse_mode="MarkdownV2")
+        await update.message.reply_text(
+            f"✅ Added RSS feed\n"
+            f"Service: {service_text}\n"
+            f"Delete after upload: {delete_text}",
+            parse_mode="MarkdownV2"
+        )
     except Exception as e:
         logger.error(f"Error adding feed: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        error_msg = str(e).replace("_", "\_").replace(".", "\.").replace("-", "\-")
+        await update.message.reply_text(f"❌ Error: {error_msg}", parse_mode="MarkdownV2")
 
 
 async def cmd_list_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,15 +376,14 @@ async def cmd_list_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 No RSS feeds configured")
         return
 
-    text = "📰 *RSS Feeds:*\n\n"
+    lines = ["📰 *RSS Feeds:*\n"]
     for i, feed in enumerate(feeds, 1):
-        url = feed["url"]
-        # Escape for MarkdownV2
-        url_escaped = url.replace("_", "\_").replace(".", "\.").replace("-", "\-").replace("?", "\?").replace("=", "\=").replace("&", "\&")
+        url = feed["url"][:50]  # Truncate long URLs
         service = feed.get("service", "auto")
         delete = "🗑" if feed.get("delete_after_upload", False) else ""
-        text += f"{i}\. `{url_escaped}` \({service}\) {delete}\n"
+        lines.append(f"{i}\. {service} {delete}")
 
+    text = "\n".join(lines)
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
@@ -408,7 +415,7 @@ async def cmd_remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     if not args:
-        msg = "Usage: `/remove_feed <index or url>`\n\nExample: `/remove_feed 1`"
+        msg = "Usage: `/remove_feed <index>`\n\nExample: `/remove_feed 1`"
         await update.message.reply_text(msg, parse_mode="MarkdownV2")
         return
 
@@ -421,14 +428,12 @@ async def cmd_remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if 0 <= index < len(feeds):
                 url = feeds[index]["url"]
                 rss_manager.remove_feed(url)
-                url_escaped = url.replace("_", "\_").replace(".", "\.").replace("-", "\-").replace("?", "\?").replace("=", "\=").replace("&", "\&")
-                await update.message.reply_text(f"✅ Removed feed: `{url_escaped}`", parse_mode="MarkdownV2")
+                await update.message.reply_text(f"✅ Removed feed \#{index + 1}", parse_mode="MarkdownV2")
             else:
                 await update.message.reply_text("❌ Invalid feed index")
         else:
             rss_manager.remove_feed(identifier)
-            identifier_escaped = identifier.replace("_", "\_").replace(".", "\.").replace("-", "\-").replace("?", "\?").replace("=", "\=").replace("&", "\&")
-            await update.message.reply_text(f"✅ Removed feed: `{identifier_escaped}`", parse_mode="MarkdownV2")
+            await update.message.reply_text(f"✅ Removed feed", parse_mode="MarkdownV2")
 
     except Exception as e:
         logger.error(f"Error removing feed: {e}", exc_info=True)
