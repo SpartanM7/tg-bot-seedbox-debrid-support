@@ -56,27 +56,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Environment variables
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Environment variables - CORRECTED TO MATCH YOUR HEROKU CONFIG
+TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")  # Support both names
 ALLOWED_USERS = [int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()]
 RD_API_KEY = os.getenv("RD_ACCESS_TOKEN")
 SB_HOST = os.getenv("SEEDBOX_HOST")
 SB_USER = os.getenv("RUTORRENT_USER")
-SB_PASS = os.getenv("RUTORRENT_PASS")
-GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
+SB_PASS = os.getenv("RUTORRENT_PASS") or os.getenv("SFTP_PASS")  # Support both
+GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID") or os.getenv("DRIVE_DEST")  # Support both
 TG_UPLOAD_TARGET = os.getenv("TG_UPLOAD_TARGET")
 
 # Initialize clients with error handling
 try:
     rd_client = RDClient(RD_API_KEY) if RD_API_KEY else None
+    if rd_client:
+        logger.info("✅ Real-Debrid client initialized")
 except Exception as e:
-    logger.warning(f"Real-Debrid not configured: {e}")
+    logger.warning(f"⚠️ Real-Debrid not configured: {e}")
     rd_client = None
 
 try:
     sb_client = SeedboxClient() if all([SB_USER, SB_PASS]) else None
+    if sb_client:
+        logger.info("✅ Seedbox client initialized")
 except Exception as e:
-    logger.warning(f"Seedbox not configured: {e}")
+    logger.warning(f"⚠️ Seedbox not configured: {e}")
     sb_client = None
 
 state_manager = get_state()
@@ -534,10 +538,12 @@ async def post_init(application):
 def main():
     """Start the bot"""
     if not TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN not set")
+        logger.error("❌ BOT_TOKEN or TELEGRAM_BOT_TOKEN not set in Heroku config")
+        logger.error("Run: heroku config:set BOT_TOKEN=your_token_here")
         return
 
     logger.info(f"Using python-telegram-bot v{PTB_VERSION}")
+    logger.info(f"Bot token: {TOKEN[:10]}...{TOKEN[-4:]}")
 
     if PTB_VERSION == 20:
         application = Application.builder().token(TOKEN).post_init(post_init).build()
