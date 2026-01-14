@@ -1,149 +1,145 @@
-"""Real-Debrid client wrapper (HTTP implementation).
-
-This implementation uses the Real-Debrid REST API v1. It requires a valid
-`RD_ACCESS_TOKEN` environment variable (a personal access token).
-
-Note: the API surface used is minimal and focuses on the operations needed by
-v1: check instant availability, add magnet, list torrents, delete torrent.
+"""
+Real-Debrid API client with automatic token sanitization
 """
 
 import os
-import requests
 import logging
-from typing import List, Dict, Any, Optional
+import requests
+from typing import List, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
 
-from bot.config import RD_ACCESS_TOKEN, RD_API_BASE
 
-
-class RealDebridNotConfigured(RuntimeError):
-    pass
-
-
-class RDAPIError(RuntimeError):
+class RealDebridNotConfigured(Exception):
+    """Raised when Real-Debrid is not properly configured"""
     pass
 
 
 class RDClient:
-    def __init__(self, access_token: str = None, base_url: str = None, timeout: int = 20):
-        self.access_token = access_token or RD_ACCESS_TOKEN
-        self.base = base_url or RD_API_BASE
-        self.timeout = timeout
-        if not self.access_token:
-            logger.error("RD_ACCESS_TOKEN not set")
-            raise RealDebridNotConfigured("Real-Debrid access token not set (RD_ACCESS_TOKEN)")
-        logger.info(f"Initialized RDClient with base {self.base}")
+    """Real-Debrid API client"""
+
+    def __init__(self, api_key: Optional[str] = None):
+        """Initialize Real-Debrid client with token sanitization"""
+        self.api_key = api_key or os.getenv("RD_ACCESS_TOKEN")
+
+        # ✅ SANITIZE TOKEN - Remove ALL hidden characters
+        if self.api_key:
+            # Remove whitespace, newlines, carriage returns, quotes
+            self.api_key = self.api_key.strip()
+            self.api_key = self.api_key.replace('\r', '')
+            self.api_key = self.api_key.replace('\n', '')
+            self.api_key = self.api_key.replace('\t', '')
+            self.api_key = self.api_key.strip('"').strip("'")
+            logger.info(f"✅ Token sanitized: {self.api_key[:10]}...{self.api_key[-4:]}")
+
+        if not self.api_key:
+            raise RealDebridNotConfigured("RD_ACCESS_TOKEN not set")
+
+        self.base_url = "https://api.real-debrid.com/rest/1.0"
+        logger.info(f"Initialized RDClient with base {self.base_url}")
 
     def _headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.access_token}"}
+        """Get request headers with clean token"""
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
 
-    def _request(self, method: str, path: str, **kwargs) -> Any:
-        url = self.base.rstrip("/") + "/" + path.lstrip("/")
-        kwargs.setdefault("timeout", self.timeout)
-        headers = kwargs.pop("headers", {})
-        headers.update(self._headers())
-        
-        headers.update(self._headers())
-        
-        try:
-            logger.debug(f"RD Request: {method} {url}")
-            resp = requests.request(method, url, headers=headers, **kwargs)
-        except requests.RequestException as exc:
-            raise RDAPIError(f"network error: {exc}") from exc
-            
-        if resp.status_code == 401:
-            raise RealDebridNotConfigured("Real-Debrid access token rejected (401)")
-        
-        if resp.status_code == 204:
-            return True
-
-        if not resp.ok:
-            error_msg = f"RD API {resp.status_code}"
-            try:
-                data = resp.json()
-                if "error" in data:
-                    error_msg += f": {data['error']}"
-            except Exception:
-                error_msg += f": {resp.text}"
-            raise RDAPIError(error_msg)
+    def _request(self, method: str, endpoint: str, **kwargs) -> Any:
+        """Make API request with error handling"""
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
 
         try:
-            return resp.json()
-        except ValueError:
-            return resp.text
+            response = requests.request(
+                method=method,
+                url=url,
+                headers=self._headers(),
+                timeout=30,
+                **kwargs
+            )
+            response.raise_for_status()
 
-    def get_user_info(self) -> Dict[str, Any]:
-        """Get user info to verify token and status."""
-        return self._request("GET", "/user")
+            # Handle empty responses
+            if response.status_code == 204 or not response.text:
+                return {}
 
-    def is_cached(self, magnet_or_hash: str) -> bool:
-        """Check instant availability for a magnet or torrent hash.
+            return response.json()
 
-        Uses the `/torrents/instantAvailability` endpoint. Returns True if RD has
-        the torrent cached/instant-available, otherwise False.
-        """
-        try:
-            # Clean magnet to hash if needed, but RD API usually handles both.
-            # The API expects `magnets[]` as POST payload.
-            data = {"magnets[]": magnet_or_hash}
-            resp = self._request("GET", "/torrents/instantAvailability/" + magnet_or_hash)
-            
-            # Endpoint actually uses GET with /{hash} for single check in some docs, but POST for batch. 
-            # The v1 stubs used POST. Let's stick to the documented way for checking a single hash/magnet if possible.
-            # However, simpler to use the method that definitely worked or stick to the previous pattern if it was robust.
-            # Actually, standard RD API for one hash: GET /torrents/instantAvailability/{hash}
-            # For this implementation, I will stick to what was likely intended or standard:
-            if not resp:
-                return False
-                
-            # Response format: { "hash": { "rd": [ { ... } ] } }
-            if isinstance(resp, dict):
-                for hoster_data in resp.values(): # iterate over hashes
-                    if isinstance(hoster_data, dict) and "rd" in hoster_data:
-                        variants = hoster_data["rd"]
-                        if variants and len(variants) > 0:
-                            return True
-            return False
-            
-        except RealDebridNotConfigured:
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401:
+                logger.error("❌ Real-Debrid authentication failed - check your token")
+                raise RealDebridNotConfigured(f"Invalid API key: {e}")
+            logger.error(f"Real-Debrid HTTP error: {e}")
             raise
-        except Exception as e:
-            logger.error(f"Error checking cache status: {e}")
-            return False
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Real-Debrid network error: {e}")
+            raise
+        except ValueError as e:
+            logger.error(f"Real-Debrid JSON decode error: {e}")
+            raise
 
-    def unrestrict_link(self, link: str, remote: bool = False) -> Dict[str, Any]:
-        """Unrestrict a hoster link (e.g. from a torrent download or DDL).
-        Set remote=True to use 'Remote Traffic' (required for server-side downloads).
-        """
+    def add_magnet(self, magnet: str) -> Dict:
+        """Add magnet link"""
+        logger.info(f"Adding magnet to Real-Debrid: {magnet[:50]}...")
+        return self._request("POST", "/torrents/addMagnet", data={"magnet": magnet})
+
+    def add_torrent(self, torrent_data: bytes) -> Dict:
+        """Add torrent file"""
+        logger.info("Adding torrent file to Real-Debrid")
+        files = {"file": ("file.torrent", torrent_data)}
+
+        # Special handling for file uploads
+        url = f"{self.base_url}/torrents/addTorrent"
+        response = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            files=files,
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_torrent_info(self, torrent_id: str) -> Dict:
+        """Get torrent information"""
+        return self._request("GET", f"/torrents/info/{torrent_id}")
+
+    def select_files(self, torrent_id: str, file_ids: str = "all") -> None:
+        """Select files to download"""
+        logger.info(f"Selecting files for torrent {torrent_id}: {file_ids}")
+        self._request("POST", f"/torrents/selectFiles/{torrent_id}", data={"files": file_ids})
+
+    def list_torrents(self, limit: int = 50) -> List[Dict]:
+        """List all torrents"""
+        try:
+            result = self._request("GET", "/torrents", params={"limit": limit})
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            logger.error(f"Failed to list torrents: {e}")
+            return []
+
+    def delete_torrent(self, torrent_id: str) -> None:
+        """Delete a torrent"""
+        logger.info(f"Deleting torrent {torrent_id}")
+        self._request("DELETE", f"/torrents/delete/{torrent_id}")
+
+    def unrestrict_link(self, link: str, remote: bool = True) -> Dict:
+        """Unrestrict a download link"""
+        logger.info(f"Unrestricting link: {link[:50]}...")
         data = {"link": link}
         if remote:
             data["remote"] = "1"
         return self._request("POST", "/unrestrict/link", data=data)
 
-    def add_magnet(self, magnet: str) -> Dict[str, Any]:
-        """Add a magnet to Real-Debrid torrents and return the created resource."""
-        return self._request("POST", "/torrents/addMagnet", data={"magnet": magnet})
+    def check_instant_availability(self, hashes: List[str]) -> Dict:
+        """Check if torrents are cached"""
+        if not hashes:
+            return {}
 
-    def list_torrents(self, page: int = 1, limit: int = 50) -> List[Dict[str, Any]]:
-        """List user torrents."""
-        return self._request("GET", "/torrents", params={"page": page, "limit": limit}) or []
-    
-    def get_torrent_info(self, torrent_id: str) -> Dict[str, Any]:
-        """Get details about a specific torrent."""
-        return self._request("GET", f"/torrents/info/{torrent_id}")
+        hash_str = "/".join(hashes)
+        logger.debug(f"Checking instant availability for {len(hashes)} hash(es)")
 
-    def delete_torrent(self, torrent_id: str) -> bool:
-        """Delete a torrent."""
-        self._request("DELETE", f"/torrents/{torrent_id}")
-        return True
-
-    def select_files(self, torrent_id: str, file_ids: str = "all") -> bool:
-        """Select files to start the torrent (default 'all')."""
-        self._request("POST", f"/torrents/selectFiles/{torrent_id}", data={"files": file_ids})
-        return True
-
-    def get_downloads(self, page: int = 1, limit: int = 50) -> List[Dict[str, Any]]:
-        """List unrestricted downloads history."""
-        return self._request("GET", "/downloads", params={"page": page, "limit": limit}) or []
-
+        try:
+            return self._request("GET", f"/torrents/instantAvailability/{hash_str}")
+        except Exception as e:
+            logger.error(f"Failed to check instant availability: {e}")
+            return {}
