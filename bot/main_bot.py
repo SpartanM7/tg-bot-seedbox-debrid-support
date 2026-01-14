@@ -2,42 +2,25 @@
 """
 Unified Telegram bot for managing torrents via Real-Debrid and Seedbox.
 Handles RSS feeds with smart polling and caching.
-Compatible with python-telegram-bot v13+
+V13 COMPATIBLE - No async/await in handlers
 """
 
 import os
 import sys
 import logging
-import asyncio
+import time
+import threading
 from datetime import datetime, timezone
 
-# Try v20+ imports first, fall back to v13
-try:
-    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-    from telegram.ext import (
-        Application,
-        CommandHandler,
-        MessageHandler,
-        CallbackQueryHandler,
-        filters,
-        ContextTypes,
-    )
-    PTB_VERSION = 20
-except ImportError:
-    # Fall back to v13
-    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-    from telegram.ext import (
-        Updater,
-        CommandHandler,
-        MessageHandler,
-        CallbackQueryHandler,
-        Filters,
-        CallbackContext,
-    )
-    PTB_VERSION = 13
-    # Aliases for compatibility
-    ContextTypes = type('ContextTypes', (), {'DEFAULT_TYPE': CallbackContext})
-    filters = Filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    Filters,
+    CallbackContext,
+)
 
 # Import bot modules
 from bot.clients.realdebrid import RDClient
@@ -123,10 +106,10 @@ def check_auth(user_id: int) -> bool:
     return user_id in ALLOWED_USERS
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start(update: Update, context: CallbackContext):
     """Start command"""
     if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
+        update.message.reply_text("❌ Unauthorized")
         return
 
     msg = (
@@ -143,13 +126,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/rss\_failed \- View failed items"
     )
 
-    await update.message.reply_text(msg, parse_mode="MarkdownV2")
+    update.message.reply_text(msg, parse_mode="MarkdownV2")
 
 
-async def handle_magnet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_magnet(update: Update, context: CallbackContext):
     """Handle magnet link or torrent file"""
     if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
+        update.message.reply_text("❌ Unauthorized")
         return
 
     user_id = update.effective_user.id
@@ -160,11 +143,11 @@ async def handle_magnet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     torrent_file = None
 
     if message.document and message.document.file_name.endswith(".torrent"):
-        file = await context.bot.get_file(message.document.file_id)
-        torrent_file = await file.download_as_bytearray()
+        file = context.bot.get_file(message.document.file_id)
+        torrent_file = file.download_as_bytearray()
 
     if not magnet and not torrent_file:
-        await message.reply_text("❌ Please send a magnet link or .torrent file")
+        message.reply_text("❌ Please send a magnet link or .torrent file")
         return
 
     # Ask for service selection
@@ -176,20 +159,20 @@ async def handle_magnet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await message.reply_text("Select service:", reply_markup=reply_markup)
+    message.reply_text("Select service:", reply_markup=reply_markup)
 
     # Store torrent file in context
     if torrent_file:
         context.user_data["pending_torrent"] = torrent_file
 
 
-async def handle_service_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_service_selection(update: Update, context: CallbackContext):
     """Handle service selection callback"""
     query = update.callback_query
-    await query.answer()
+    query.answer()
 
     if not check_auth(query.from_user.id):
-        await query.edit_message_text("❌ Unauthorized")
+        query.edit_message_text("❌ Unauthorized")
         return
 
     data = query.data.split(":", 2)
@@ -205,16 +188,16 @@ async def handle_service_selection(update: Update, context: ContextTypes.DEFAULT
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await query.edit_message_text("Upload to:", reply_markup=reply_markup)
+    query.edit_message_text("Upload to:", reply_markup=reply_markup)
 
 
-async def handle_destination_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_destination_selection(update: Update, context: CallbackContext):
     """Handle upload destination selection"""
     query = update.callback_query
-    await query.answer()
+    query.answer()
 
     if not check_auth(query.from_user.id):
-        await query.edit_message_text("❌ Unauthorized")
+        query.edit_message_text("❌ Unauthorized")
         return
 
     data = query.data.split(":", 3)
@@ -231,22 +214,22 @@ async def handle_destination_selection(update: Update, context: ContextTypes.DEF
     if destination == "telegram":
         upload_chat_id = TG_UPLOAD_TARGET if TG_UPLOAD_TARGET else str(chat_id)
         if not upload_chat_id:
-            await query.edit_message_text("❌ No Telegram chat configured for uploads")
+            query.edit_message_text("❌ No Telegram chat configured for uploads")
             return
 
-    await query.edit_message_text("⏳ Processing...")
+    query.edit_message_text("⏳ Processing...")
 
     try:
         # Add torrent
         if service == "rd":
             if not rd_client:
-                await query.edit_message_text("❌ Real-Debrid not configured")
+                query.edit_message_text("❌ Real-Debrid not configured")
                 return
 
             if magnet:
                 result = rd_client.add_magnet(magnet)
             else:
-                await query.edit_message_text("❌ .torrent file upload to Real-Debrid requires URL")
+                query.edit_message_text("❌ .torrent file upload to Real-Debrid requires URL")
                 return
 
             torrent_id = result.get("id")
@@ -255,39 +238,39 @@ async def handle_destination_selection(update: Update, context: ContextTypes.DEF
             except Exception as e:
                 logger.warning(f"Could not auto-select files: {e}")
 
-            await query.edit_message_text(f"✅ Added to Real\-Debrid\nID: `{torrent_id}`", parse_mode="MarkdownV2")
+            query.edit_message_text(f"✅ Added to Real\-Debrid\nID: `{torrent_id}`", parse_mode="MarkdownV2")
             state_manager.add_intent(f"rd:{torrent_id}", destination)
 
         elif service == "sb":
             if not sb_client:
-                await query.edit_message_text("❌ Seedbox not configured")
+                query.edit_message_text("❌ Seedbox not configured")
                 return
 
             if magnet:
                 result = sb_client.add_torrent(magnet)
             else:
-                await query.edit_message_text("❌ .torrent file upload to seedbox requires URL")
+                query.edit_message_text("❌ .torrent file upload to seedbox requires URL")
                 return
 
-            await query.edit_message_text(f"✅ Added to Seedbox", parse_mode="MarkdownV2")
+            query.edit_message_text(f"✅ Added to Seedbox", parse_mode="MarkdownV2")
 
     except Exception as e:
         logger.error(f"Error adding torrent: {e}", exc_info=True)
-        await query.edit_message_text(f"❌ Error: {str(e)}")
+        query.edit_message_text(f"❌ Error: {str(e)}")
     finally:
         context.user_data.pop("pending_torrent", None)
 
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def status(update: Update, context: CallbackContext):
     """Show active torrents status"""
     if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
+        update.message.reply_text("❌ Unauthorized")
         return
 
     tasks = downloader.get_active_tasks()
 
     if not tasks:
-        await update.message.reply_text("📭 No active downloads")
+        update.message.reply_text("📭 No active downloads")
         return
 
     status_lines = ["📊 *Active Downloads:*\n"]
@@ -313,15 +296,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_lines.append("")
 
     status_text = "\n".join(status_lines)
-    await update.message.reply_text(status_text, parse_mode="MarkdownV2")
+    update.message.reply_text(status_text, parse_mode="MarkdownV2")
 
 
 # ==================== RSS COMMANDS ====================
 
-async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def cmd_add_feed(update: Update, context: CallbackContext):
     """Add RSS feed command"""
     if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
+        update.message.reply_text("❌ Unauthorized")
         return
 
     args = context.args
@@ -334,7 +317,7 @@ async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`/add_feed https://example\.com/rss sb true`\n"
             "`/add_feed https://example\.com/rss sb false true`"
         )
-        await update.message.reply_text(msg, parse_mode="MarkdownV2")
+        update.message.reply_text(msg, parse_mode="MarkdownV2")
         return
 
     url = args[0]
@@ -348,7 +331,7 @@ async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service_text = service if service else "auto"
         delete_text = "✅" if delete_after_upload else "❌"
 
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ Added RSS feed\n"
             f"Service: {service_text}\n"
             f"Delete after upload: {delete_text}",
@@ -356,19 +339,19 @@ async def cmd_add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Error adding feed: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        update.message.reply_text(f"❌ Error: {str(e)}")
 
 
-async def cmd_list_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def cmd_list_feeds(update: Update, context: CallbackContext):
     """List all RSS feeds"""
     if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
+        update.message.reply_text("❌ Unauthorized")
         return
 
     feeds = rss_manager.list_feeds()
 
     if not feeds:
-        await update.message.reply_text("📭 No RSS feeds configured")
+        update.message.reply_text("📭 No RSS feeds configured")
         return
 
     lines = ["📰 *RSS Feeds:*\n"]
@@ -379,39 +362,39 @@ async def cmd_list_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{i}\. {service} {delete}")
 
     text = "\n".join(lines)
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
+    update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
-async def cmd_poll_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def cmd_poll_feeds(update: Update, context: CallbackContext):
     """Manually poll all RSS feeds"""
     if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
+        update.message.reply_text("❌ Unauthorized")
         return
 
-    await update.message.reply_text("🔄 Polling RSS feeds...")
+    update.message.reply_text("🔄 Polling RSS feeds...")
 
     try:
-        new_items = await rss_manager.poll_feeds()
+        new_items = rss_manager.poll_feeds()
 
         if new_items == 0:
-            await update.message.reply_text("✅ No new items found")
+            update.message.reply_text("✅ No new items found")
         else:
-            await update.message.reply_text(f"✅ Found {new_items} new item(s)")
+            update.message.reply_text(f"✅ Found {new_items} new item(s)")
     except Exception as e:
         logger.error(f"Error polling feeds: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        update.message.reply_text(f"❌ Error: {str(e)}")
 
 
-async def cmd_remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def cmd_remove_feed(update: Update, context: CallbackContext):
     """Remove RSS feed command"""
     if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
+        update.message.reply_text("❌ Unauthorized")
         return
 
     args = context.args
     if not args:
         msg = "Usage: `/remove_feed <index>`\n\nExample: `/remove_feed 1`"
-        await update.message.reply_text(msg, parse_mode="MarkdownV2")
+        update.message.reply_text(msg, parse_mode="MarkdownV2")
         return
 
     identifier = " ".join(args)
@@ -423,28 +406,28 @@ async def cmd_remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if 0 <= index < len(feeds):
                 url = feeds[index]["url"]
                 rss_manager.remove_feed(url)
-                await update.message.reply_text(f"✅ Removed feed \#{index + 1}", parse_mode="MarkdownV2")
+                update.message.reply_text(f"✅ Removed feed \#{index + 1}", parse_mode="MarkdownV2")
             else:
-                await update.message.reply_text("❌ Invalid feed index")
+                update.message.reply_text("❌ Invalid feed index")
         else:
             rss_manager.remove_feed(identifier)
-            await update.message.reply_text(f"✅ Removed feed", parse_mode="MarkdownV2")
+            update.message.reply_text(f"✅ Removed feed", parse_mode="MarkdownV2")
 
     except Exception as e:
         logger.error(f"Error removing feed: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Error: {str(e)}")
+        update.message.reply_text(f"❌ Error: {str(e)}")
 
 
-async def cmd_rss_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def cmd_rss_stats(update: Update, context: CallbackContext):
     """View RSS feed statistics"""
     if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
+        update.message.reply_text("❌ Unauthorized")
         return
 
     feeds = rss_manager.list_feeds()
 
     if not feeds:
-        await update.message.reply_text("📭 No RSS feeds configured")
+        update.message.reply_text("📭 No RSS feeds configured")
         return
 
     lines = ["📊 *RSS Feed Statistics:*\n"]
@@ -462,20 +445,20 @@ async def cmd_rss_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"📦 Total: {stats['total']}\n")
 
     text = "\n".join(lines)
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
+    update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
-async def cmd_rss_failed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def cmd_rss_failed(update: Update, context: CallbackContext):
     """View failed RSS items"""
     if not check_auth(update.effective_user.id):
-        await update.message.reply_text("❌ Unauthorized")
+        update.message.reply_text("❌ Unauthorized")
         return
 
     download_failed = state_manager.list_rss_items_by_status("download_failed")
     upload_failed = state_manager.list_rss_items_by_status("upload_failed")
 
     if not download_failed and not upload_failed:
-        await update.message.reply_text("✅ No failed items")
+        update.message.reply_text("✅ No failed items")
         return
 
     lines = ["❌ *Failed RSS Items:*\n"]
@@ -501,38 +484,33 @@ async def cmd_rss_failed(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"  Error: {error_escaped}\n")
 
     text = "\n".join(lines)
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
+    update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
 # ==================== BACKGROUND TASKS ====================
 
-async def rss_poll_loop(application):
-    """Background task to poll RSS feeds periodically"""
+def rss_poll_loop():
+    """Background task to poll RSS feeds periodically (runs in thread)"""
     logger.info(f"Starting RSS poll loop (interval={RSS_POLL_INTERVAL}s)")
 
     while True:
         try:
-            await asyncio.sleep(RSS_POLL_INTERVAL)
-            new_items = await rss_manager.poll_feeds()
+            time.sleep(RSS_POLL_INTERVAL)
+            new_items = rss_manager.poll_feeds()
             if new_items > 0:
                 logger.info(f"RSS poll found {new_items} new item(s)")
         except Exception as e:
             logger.error(f"Error in RSS poll loop: {e}", exc_info=True)
 
 
-async def monitor_loop(application):
-    """Background task to monitor torrent completion"""
-    logger.info("Starting torrent monitor loop")
+def start_background_tasks():
+    """Start background polling threads"""
+    # Start monitor (has its own threading)
     monitor.start()
 
-    while True:
-        await asyncio.sleep(60)
-
-
-async def post_init(application):
-    """Initialize background tasks"""
-    asyncio.create_task(monitor_loop(application))
-    asyncio.create_task(rss_poll_loop(application))
+    # Start RSS polling thread
+    rss_thread = threading.Thread(target=rss_poll_loop, daemon=True)
+    rss_thread.start()
 
     logger.info("✅ Background tasks started")
     logger.info(f"📰 RSS auto-polling (interval: {RSS_POLL_INTERVAL}s)")
@@ -553,61 +531,43 @@ def main():
         logger.error(f"Current token format: {TOKEN[:20] if TOKEN else 'None'}...")
         return
 
-    logger.info(f"Using python-telegram-bot v{PTB_VERSION}")
+    logger.info(f"Using python-telegram-bot v13")
     logger.info(f"Bot token: {TOKEN[:10]}...{TOKEN[-4:]}")
     logger.info(f"Token length: {len(TOKEN)} chars (should be ~45)")
 
-    if PTB_VERSION == 20:
-        application = Application.builder().token(TOKEN).post_init(post_init).build()
+    try:
+        logger.info(f"🔧 Initializing Updater with token...")
+        updater = Updater(TOKEN, use_context=True)
+        dp = updater.dispatcher
 
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("status", status))
-        application.add_handler(CommandHandler("add_feed", cmd_add_feed))
-        application.add_handler(CommandHandler("list_feeds", cmd_list_feeds))
-        application.add_handler(CommandHandler("poll_feeds", cmd_poll_feeds))
-        application.add_handler(CommandHandler("remove_feed", cmd_remove_feed))
-        application.add_handler(CommandHandler("rss_stats", cmd_rss_stats))
-        application.add_handler(CommandHandler("rss_failed", cmd_rss_failed))
+        # Add handlers
+        dp.add_handler(CommandHandler("start", start))
+        dp.add_handler(CommandHandler("status", status))
+        dp.add_handler(CommandHandler("add_feed", cmd_add_feed))
+        dp.add_handler(CommandHandler("list_feeds", cmd_list_feeds))
+        dp.add_handler(CommandHandler("poll_feeds", cmd_poll_feeds))
+        dp.add_handler(CommandHandler("remove_feed", cmd_remove_feed))
+        dp.add_handler(CommandHandler("rss_stats", cmd_rss_stats))
+        dp.add_handler(CommandHandler("rss_failed", cmd_rss_failed))
 
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_magnet))
-        application.add_handler(MessageHandler(filters.Document.ALL, handle_magnet))
+        dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_magnet))
+        dp.add_handler(MessageHandler(Filters.document, handle_magnet))
 
-        application.add_handler(CallbackQueryHandler(handle_service_selection, pattern="^service:"))
-        application.add_handler(CallbackQueryHandler(handle_destination_selection, pattern="^dest:"))
+        dp.add_handler(CallbackQueryHandler(handle_service_selection, pattern="^service:"))
+        dp.add_handler(CallbackQueryHandler(handle_destination_selection, pattern="^dest:"))
 
-        logger.info("🚀 Bot started (v20+)")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Start background tasks
+        start_background_tasks()
 
-    else:
-        # v13 - with better error handling
-        try:
-            logger.info(f"🔧 Initializing Updater with token...")
-            updater = Updater(TOKEN, use_context=True)
-            dp = updater.dispatcher
+        logger.info("🚀 Bot started (v13)")
+        updater.start_polling()
+        updater.idle()
 
-            dp.add_handler(CommandHandler("start", start))
-            dp.add_handler(CommandHandler("status", status))
-            dp.add_handler(CommandHandler("add_feed", cmd_add_feed))
-            dp.add_handler(CommandHandler("list_feeds", cmd_list_feeds))
-            dp.add_handler(CommandHandler("poll_feeds", cmd_poll_feeds))
-            dp.add_handler(CommandHandler("remove_feed", cmd_remove_feed))
-            dp.add_handler(CommandHandler("rss_stats", cmd_rss_stats))
-            dp.add_handler(CommandHandler("rss_failed", cmd_rss_failed))
-
-            dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_magnet))
-            dp.add_handler(MessageHandler(Filters.document, handle_magnet))
-
-            dp.add_handler(CallbackQueryHandler(handle_service_selection, pattern="^service:"))
-            dp.add_handler(CallbackQueryHandler(handle_destination_selection, pattern="^dest:"))
-
-            logger.info("🚀 Bot started (v13)")
-            updater.start_polling()
-            updater.idle()
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize bot: {e}")
-            logger.error(f"Token being used: {TOKEN[:15]}...{TOKEN[-6:]}")
-            logger.error("Please verify your BOT_TOKEN with BotFather")
-            raise
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize bot: {e}")
+        logger.error(f"Token being used: {TOKEN[:15]}...{TOKEN[-6:]}")
+        logger.error("Please verify your BOT_TOKEN with BotFather")
+        raise
 
 
 if __name__ == "__main__":

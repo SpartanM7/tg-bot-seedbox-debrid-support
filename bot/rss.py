@@ -1,11 +1,12 @@
 """
 RSS Feed Manager with smart polling and Real-Debrid cache checking
+V13 Compatible - No async/await
 """
 
 import logging
 import feedparser
-import asyncio
 import time
+import threading
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
 import hashlib
@@ -66,7 +67,6 @@ class RSSManager:
 
         self.feeds.append(feed_data)
         self.state_manager.save_rss_feeds(self.feeds)
-
         logger.info(f"Added RSS feed: {url} (service={service}, delete={delete_after_upload})")
 
     def remove_feed(self, url: str):
@@ -79,13 +79,13 @@ class RSSManager:
         """List all RSS feeds"""
         return self.feeds.copy()
 
-    async def poll_feeds(self) -> int:
-        """Poll all RSS feeds and add new torrents"""
+    def poll_feeds(self) -> int:
+        """Poll all RSS feeds and add new torrents (synchronous)"""
         total_new = 0
 
         for feed in self.feeds:
             try:
-                new_items = await self._poll_feed(feed)
+                new_items = self._poll_feed(feed)
                 total_new += new_items
 
                 # Save updated feed state
@@ -93,15 +93,14 @@ class RSSManager:
 
                 # Delay between feeds to avoid rate limits
                 if new_items > 0 and self.api_delay > 0:
-                    await asyncio.sleep(self.api_delay)
-
+                    time.sleep(self.api_delay)
             except Exception as e:
                 logger.error(f"Error polling feed {feed['url']}: {e}", exc_info=True)
 
         return total_new
 
-    async def _poll_feed(self, feed: Dict) -> int:
-        """Poll single RSS feed"""
+    def _poll_feed(self, feed: Dict) -> int:
+        """Poll single RSS feed (synchronous)"""
         url = feed["url"]
         logger.info(f"Polling RSS feed: {url}")
 
@@ -158,11 +157,10 @@ class RSSManager:
 
                     # Extract title
                     title = entry.get("title", "Unknown")
-
                     logger.info(f"📰 RSS: New item - {title}")
 
                     # Add torrent with intelligent service selection
-                    success = await self._add_rss_torrent(
+                    success = self._add_rss_torrent(
                         torrent_url=torrent_url,
                         title=title,
                         feed=feed
@@ -170,11 +168,12 @@ class RSSManager:
 
                     if success:
                         new_items += 1
-                        feed["seen_guids"].append(entry_hash)
 
-                        # Delay between items to avoid rate limits
-                        if self.api_delay > 0:
-                            await asyncio.sleep(self.api_delay)
+                    feed["seen_guids"].append(entry_hash)
+
+                    # Delay between items to avoid rate limits
+                    if self.api_delay > 0:
+                        time.sleep(self.api_delay)
 
                 except Exception as e:
                     logger.error(f"Error processing entry: {e}", exc_info=True)
@@ -216,8 +215,8 @@ class RSSManager:
 
         return None
 
-    async def _add_rss_torrent(self, torrent_url: str, title: str, feed: Dict) -> bool:
-        """Add torrent from RSS with intelligent service selection"""
+    def _add_rss_torrent(self, torrent_url: str, title: str, feed: Dict) -> bool:
+        """Add torrent from RSS with intelligent service selection (synchronous)"""
         service = feed.get("service")
         private = feed.get("private", False)
         delete_after_upload = feed.get("delete_after_upload", self.delete_after_upload)
@@ -235,7 +234,7 @@ class RSSManager:
 
             # Public torrent: Check RD cache
             else:
-                selected_service = await self._select_service_by_cache(torrent_url)
+                selected_service = self._select_service_by_cache(torrent_url)
 
             # Add to selected service
             if selected_service == "rd":
@@ -254,18 +253,10 @@ class RSSManager:
                     result = self.rd_client.add_torrent(resp.content)
 
                 torrent_id = result.get("id")
-
                 logger.info(f"✅ Added to RD ({self.upload_dest}): {title}")
 
                 # Store for monitoring
-                self.state_manager.add_torrent(
-                    torrent_id=str(torrent_id),
-                    service="rd",
-                    user_id=0,
-                    upload_intent=self.upload_dest,
-                    chat_id=self.default_chat_id,
-                    delete_after_upload=False
-                )
+                self.state_manager.add_intent(f"rd:{torrent_id}", self.upload_dest)
 
             elif selected_service == "sb":
                 if not self.sb_client:
@@ -274,7 +265,7 @@ class RSSManager:
 
                 # Add to Seedbox
                 if torrent_url.startswith("magnet:"):
-                    result = self.sb_client.add_magnet(torrent_url)
+                    result = self.sb_client.add_torrent(torrent_url)
                 else:
                     import requests
                     resp = requests.get(torrent_url, timeout=30)
@@ -282,18 +273,10 @@ class RSSManager:
                     result = self.sb_client.add_torrent(resp.content)
 
                 torrent_hash = result.get("hash")
-
                 logger.info(f"✅ Added to Seedbox ({self.upload_dest}, delete={delete_after_upload}): {title}")
 
                 # Store for monitoring
-                self.state_manager.add_torrent(
-                    torrent_id=torrent_hash,
-                    service="sb",
-                    user_id=0,
-                    upload_intent=self.upload_dest,
-                    chat_id=self.default_chat_id,
-                    delete_after_upload=delete_after_upload
-                )
+                self.state_manager.add_intent(f"sb:{torrent_hash}", self.upload_dest)
 
             return True
 
@@ -301,8 +284,8 @@ class RSSManager:
             logger.error(f"Error adding RSS torrent {title}: {e}", exc_info=True)
             return False
 
-    async def _select_service_by_cache(self, torrent_url: str) -> str:
-        """Select service based on Real-Debrid cache availability"""
+    def _select_service_by_cache(self, torrent_url: str) -> str:
+        """Select service based on Real-Debrid cache availability (synchronous)"""
         try:
             # Check if RD client is available
             if not self.rd_client:
@@ -322,6 +305,7 @@ class RSSManager:
                 # Download torrent and calculate hash
                 import requests
                 import bencodepy
+
                 resp = requests.get(torrent_url, timeout=30)
                 resp.raise_for_status()
                 torrent_data = bencodepy.decode(resp.content)
