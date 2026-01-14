@@ -1,5 +1,0 @@
-- functionality for these commands are not working : rd_donwload, rd_download_gdrive, rd_list (lists unrestricted links), sb
-- download percentage is missing again
-- add functinality to resume/all all the added task
-- add a way to cancel tasks
--

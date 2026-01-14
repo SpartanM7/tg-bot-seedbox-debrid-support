@@ -33,7 +33,6 @@ from bot.config import (
 )
 from bot.state import get_state
 from bot.utils.splitter import split_file
-from bot.telethon_uploader import telethon_upload_file
 
 logger = logging.getLogger(__name__)
 
@@ -313,7 +312,7 @@ class Downloader:
             if fsize <= MAX_TG_SIZE:
                 # Direct upload (under 2GB)
                 self._update_task_status(task_id, "uploading to telegram")
-                telethon_upload_file(filepath, chat_id)
+                self._upload_telegram_large(filepath, chat_id, task_id)
             else:
                 # Split and upload (over 2GB)
                 self._update_task_status(task_id, "splitting file")
@@ -324,7 +323,7 @@ class Downloader:
 
                 for idx, part in enumerate(parts, 1):
                     try:
-                        telethon_upload_file(part, chat_id)
+                        self._upload_telegram_large(part, chat_id, task_id)
                         self._update_task_status(task_id, "uploading to telegram", uploaded_files=idx)
                         logger.info(f"Uploaded part {idx}/{total_parts}")
                     except Exception as e:
@@ -341,3 +340,29 @@ class Downloader:
         except Exception as e:
             logger.error(f"Telegram upload failed: {e}")
             raise
+
+    def _upload_telegram_large(self, filepath, chat_id, task_id):
+        """Upload large file using Telethon."""
+        from bot.telethon_uploader import get_telethon_uploader
+        from bot.telegram_loop import get_telegram_loop
+        import asyncio
+
+        uploader = get_telethon_uploader()
+        loop = get_telegram_loop()
+
+        def progress(current, total):
+            if total:
+                percent = (current / total) * 100
+                if int(percent) % 5 == 0:
+                    self._update_task_status(task_id, f"uploading ({percent:.1f}%)")
+
+        future = asyncio.run_coroutine_threadsafe(
+            uploader.upload_file(
+                filepath,
+                chat_id,
+                caption=os.path.basename(filepath),
+                progress_callback=progress
+            ),
+            loop
+        )
+        future.result()

@@ -1,12 +1,11 @@
-#!/usr/bin/env python3
-"""
-V13-Compatible bot with diagnostic logging to debug command handling
+"""Telegram bot with full production-grade handlers.
+
+Connects to real Real-Debrid, rTorrent, and yt-dlp implementations.
 """
 
 import os
 import time
 import logging
-import time
 import threading
 from typing import Optional, List, Dict, Any
 from telegram import Update
@@ -20,45 +19,21 @@ from bot.rss import FeedManager, Router
 from bot.monitor import Monitor
 from bot.downloader import Downloader
 from bot.state import get_state
-from bot.status_manager import StatusManager
-from bot.rss import RSSManager
+from bot.utils.system_info import format_system_metrics
+from bot.status_manager import get_status_manager
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Environment variables - WITH TOKEN SANITIZATION
-TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
-if TOKEN:
-    TOKEN = TOKEN.strip().strip('"').strip("'").strip()
-    logger.info(f"Bot token loaded: {TOKEN[:10]}...{TOKEN[-4:]}")
-
-ALLOWED_USERS = [int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()]
-RD_API_KEY = os.getenv("RD_ACCESS_TOKEN")
-SB_HOST = os.getenv("SEEDBOX_HOST")
-SB_USER = os.getenv("RUTORRENT_USER")
-SB_PASS = os.getenv("RUTORRENT_PASS") or os.getenv("SFTP_PASS")
-TG_UPLOAD_TARGET = os.getenv("TG_UPLOAD_TARGET")
-
-# Initialize clients with error handling
+# --- Clients ---
 try:
-    rd_client = RDClient(RD_API_KEY) if RD_API_KEY else None
-    if rd_client:
-        logger.info("✅ Real-Debrid client initialized")
-except Exception as e:
-    logger.warning(f"⚠️ Real-Debrid not configured: {e}")
+    rd_client = RDClient()
+except RealDebridNotConfigured:
     rd_client = None
 
 try:
-    sb_client = SeedboxClient() if all([SB_USER, SB_PASS]) else None
-    if sb_client:
-        logger.info("✅ Seedbox client initialized")
-except Exception as e:
-    logger.warning(f"⚠️ Seedbox not configured: {e}")
+    sb_client = SeedboxClient()
+except SeedboxNotConfigured:
     sb_client = None
 
 # --- RSS Manager ---
@@ -410,8 +385,7 @@ def sb_download(update: Update, context: CallbackContext):
         downloader.process_item(dl_url, torrent['name'], dest=dest, chat_id=chat_id, size=torrent.get('size', 0))
         update.message.reply_text(f"Downloading {torrent['name']} to {dest}")
     except Exception as e:
-        logger.error(f"Error adding torrent: {e}", exc_info=True)
-        query.edit_message_text(f"❌ Error: {str(e)}")
+        update.message.reply_text(f"Error: {e}")
 
 # Status Command (ENHANCED with live updates)
 def status(update: Update, context: CallbackContext):
@@ -434,8 +408,8 @@ def status(update: Update, context: CallbackContext):
         sm.start_live_status(user_id, chat_id, message.message_id)
 
     except Exception as e:
-        logger.error(f"Error adding feed: {e}", exc_info=True)
-        update.message.reply_text(f"❌ Error: {str(e)}")
+        logger.error(f"Error in status command: {e}")
+        update.message.reply_text(f"Error getting status: {e}")
 
 # yt-dlp Commands
 def ytdl(update: Update, context: CallbackContext):
@@ -495,8 +469,8 @@ def sb_torrent_gdrive(update: Update, context: CallbackContext):
     else:
         update.message.reply_text("Warning: Could not extract hash from magnet. Intent might fail.")
     try:
-        new_items = rss_manager.poll_feeds()
-        update.message.reply_text(f"✅ Found {new_items} new item(s)")
+        sb_client.add_torrent(magnet)
+        update.message.reply_text(f"Added to Seedbox (Dest: GDrive).")
     except Exception as e:
         update.message.reply_text(f"Error: {e}")
 
