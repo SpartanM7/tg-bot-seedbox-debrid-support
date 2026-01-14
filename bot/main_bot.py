@@ -56,14 +56,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Environment variables - CORRECTED TO MATCH YOUR HEROKU CONFIG
-TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")  # Support both names
+# Environment variables - WITH TOKEN SANITIZATION
+TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
+# Strip any whitespace, quotes, or hidden characters from token
+if TOKEN:
+    TOKEN = TOKEN.strip().strip('"').strip("'").strip()
+    logger.info(f"Bot token loaded: {TOKEN[:10]}...{TOKEN[-4:]}")
+
 ALLOWED_USERS = [int(uid) for uid in os.getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()]
 RD_API_KEY = os.getenv("RD_ACCESS_TOKEN")
 SB_HOST = os.getenv("SEEDBOX_HOST")
 SB_USER = os.getenv("RUTORRENT_USER")
-SB_PASS = os.getenv("RUTORRENT_PASS") or os.getenv("SFTP_PASS")  # Support both
-GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID") or os.getenv("DRIVE_DEST")  # Support both
+SB_PASS = os.getenv("RUTORRENT_PASS") or os.getenv("SFTP_PASS")
+GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID") or os.getenv("DRIVE_DEST")
 TG_UPLOAD_TARGET = os.getenv("TG_UPLOAD_TARGET")
 
 # Initialize clients with error handling
@@ -542,8 +547,15 @@ def main():
         logger.error("Run: heroku config:set BOT_TOKEN=your_token_here")
         return
 
+    # Validate token format
+    if not TOKEN or ":" not in TOKEN:
+        logger.error("❌ Invalid BOT_TOKEN format. Should be: XXXXXXXXXX:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+        logger.error(f"Current token format: {TOKEN[:20] if TOKEN else 'None'}...")
+        return
+
     logger.info(f"Using python-telegram-bot v{PTB_VERSION}")
     logger.info(f"Bot token: {TOKEN[:10]}...{TOKEN[-4:]}")
+    logger.info(f"Token length: {len(TOKEN)} chars (should be ~45)")
 
     if PTB_VERSION == 20:
         application = Application.builder().token(TOKEN).post_init(post_init).build()
@@ -567,27 +579,35 @@ def main():
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
     else:
-        updater = Updater(TOKEN, use_context=True)
-        dp = updater.dispatcher
+        # v13 - with better error handling
+        try:
+            logger.info(f"🔧 Initializing Updater with token...")
+            updater = Updater(TOKEN, use_context=True)
+            dp = updater.dispatcher
 
-        dp.add_handler(CommandHandler("start", start))
-        dp.add_handler(CommandHandler("status", status))
-        dp.add_handler(CommandHandler("add_feed", cmd_add_feed))
-        dp.add_handler(CommandHandler("list_feeds", cmd_list_feeds))
-        dp.add_handler(CommandHandler("poll_feeds", cmd_poll_feeds))
-        dp.add_handler(CommandHandler("remove_feed", cmd_remove_feed))
-        dp.add_handler(CommandHandler("rss_stats", cmd_rss_stats))
-        dp.add_handler(CommandHandler("rss_failed", cmd_rss_failed))
+            dp.add_handler(CommandHandler("start", start))
+            dp.add_handler(CommandHandler("status", status))
+            dp.add_handler(CommandHandler("add_feed", cmd_add_feed))
+            dp.add_handler(CommandHandler("list_feeds", cmd_list_feeds))
+            dp.add_handler(CommandHandler("poll_feeds", cmd_poll_feeds))
+            dp.add_handler(CommandHandler("remove_feed", cmd_remove_feed))
+            dp.add_handler(CommandHandler("rss_stats", cmd_rss_stats))
+            dp.add_handler(CommandHandler("rss_failed", cmd_rss_failed))
 
-        dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_magnet))
-        dp.add_handler(MessageHandler(Filters.document, handle_magnet))
+            dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_magnet))
+            dp.add_handler(MessageHandler(Filters.document, handle_magnet))
 
-        dp.add_handler(CallbackQueryHandler(handle_service_selection, pattern="^service:"))
-        dp.add_handler(CallbackQueryHandler(handle_destination_selection, pattern="^dest:"))
+            dp.add_handler(CallbackQueryHandler(handle_service_selection, pattern="^service:"))
+            dp.add_handler(CallbackQueryHandler(handle_destination_selection, pattern="^dest:"))
 
-        logger.info("🚀 Bot started (v13)")
-        updater.start_polling()
-        updater.idle()
+            logger.info("🚀 Bot started (v13)")
+            updater.start_polling()
+            updater.idle()
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize bot: {e}")
+            logger.error(f"Token being used: {TOKEN[:15]}...{TOKEN[-6:]}")
+            logger.error("Please verify your BOT_TOKEN with BotFather")
+            raise
 
 
 if __name__ == "__main__":
